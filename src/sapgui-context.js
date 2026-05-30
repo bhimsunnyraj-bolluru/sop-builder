@@ -1,10 +1,8 @@
 const path = require("path");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
-
+const { getPsScriptPath } = require("../paths");
 const execFileAsync = promisify(execFile);
-
-const PS_SCRIPT = path.join(__dirname, "..", "scripts", "get-sapgui-context.ps1");
 
 function emptyContext() {
 	return {
@@ -36,7 +34,7 @@ async function getSapGuiContext() {
 	try {
 		const { stdout } = await execFileAsync(
 			"powershell",
-			["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PS_SCRIPT],
+			["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", getPsScriptPath()],
 			{ encoding: "utf8", windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 }
 		);
 		return parseContextOutput(stdout);

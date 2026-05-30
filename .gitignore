@@ -11,7 +11,9 @@ data/sops/*
 data/project.json
 data/settings.json
 
-# OS / editor
+# Build output
+dist/
+
 .DS_Store
 Thumbs.db
 *.log

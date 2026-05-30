@@ -22,18 +22,66 @@ Think of it as a lightweight Scribe-style tool focused on SAP process documentat
 
 ---
 
-## Requirements
+## Two ways to run SOP Builder
+
+| Who | How |
+|-----|-----|
+| **Most team members** | Install the `.exe` (no Node.js needed) — see [Install from EXE](#install-from-exe-recommended) |
+| **Developers** | Clone the repo and run `npm start` — see [Developer setup](#developer-setup) |
+
+---
+
+## Install from EXE (recommended)
+
+You do **not** need Node.js or `npm start` for daily use. Someone on the team builds the installer once; everyone else double-clicks the app.
+
+### For end users
+
+1. Get the installer from your team lead or from the [GitHub Releases](https://github.com/bhimsunnyraj-bolluru/sop-builder/releases) page:
+   - **`SOP Builder Setup 1.0.0.exe`** — installs like any Windows app (Start menu + desktop shortcut)
+   - **`SOP Builder 1.0.0.exe`** — portable version; no install, runs from any folder
+2. Run the installer or portable `.exe`.
+3. Launch **SOP Builder** from the Start menu, desktop, or the portable file.
+
+Your SOP projects, screenshots, and exports are stored **next to the installed app** (or next to the portable `.exe`) in `data/`, `screenshots/`, and `exports/`.
+
+### For whoever builds the EXE (once per release)
+
+On a Windows machine with Node.js installed, from the project folder:
+
+```powershell
+npm install
+npm run dist
+```
+
+Output appears in the `dist/` folder:
+
+| File | Purpose |
+|------|---------|
+| `dist/SOP Builder Setup 1.0.0.exe` | NSIS installer for teammates |
+| `dist/SOP Builder 1.0.0.exe` | Portable single-file exe |
+| `dist/win-unpacked/` | Unpacked app folder (for testing) |
+
+Share the **Setup** or **portable** exe with the team (Teams, SharePoint, GitHub Releases, etc.).
+
+Portable build only:
+
+```powershell
+npm run dist:portable
+```
+
+---
+
+## Developer setup
+
+Use this if you are changing the code or running from source.
+
+### Requirements
 
 - **Windows 10 or 11**
 - **Node.js 18 LTS or newer** — [Download Node.js](https://nodejs.org/)
 - **SAP GUI for Windows** (for capturing SAP screens)
-- **Optional:** SAP GUI Scripting enabled for richer step titles (transaction codes, status bar text)
-
----
-
-## Installation (Team Members)
-
-Follow these steps on each machine that will run SOP Builder.
+- **Optional:** SAP GUI Scripting enabled for richer step titles
 
 ### 1. Install Node.js
 
@@ -77,13 +125,15 @@ copy data\settings.example.json data\settings.json
 
 Open **Settings** (⚙️) in the app to change the capture hotkey if `Alt+C` conflicts with another tool.
 
-### 5. Start the app
+### 5. Run from source
 
 ```powershell
 npm start
 ```
 
 The SOP Builder window opens. Keep it running while you document SAP transactions.
+
+To build a distributable `.exe` for teammates, see [Install from EXE](#install-from-exe-recommended).
 
 ---
 
@@ -105,6 +155,7 @@ The SOP Builder window opens. Keep it running while you document SAP transaction
 ```
 sop-builder/
 ├── main.js                 # Electron main process (window, capture, hotkeys)
+├── paths.js                # App folders (dev vs packaged .exe)
 ├── package.json
 ├── src/
 │   ├── index.html          # UI layout
@@ -179,13 +230,41 @@ Example `data/settings.json`:
 ## Development
 
 ```powershell
-npm start
+npm start          # run from source
+npm run dist       # build Windows installer + portable exe
 ```
 
-Main technologies: **Electron**, **docx**, **screenshot-desktop**, **SortableJS**.
+Main technologies: **Electron**, **electron-builder**, **docx**, **screenshot-desktop**, **SortableJS**.
 
 ---
 
 ## License
 
-Internal use — Business Core Solutions. Contact your team lead for distribution and usage guidelines.
+What changed
+Packaging is now configured with electron-builder. I built the Windows installers on your machine:
+
+File	Use
+dist\SOP Builder Setup 1.0.0.exe
+Installer — teammates double-click, no Node.js
+dist\SOP Builder 1.0.0.exe
+Portable — single file, no install
+dist\win-unpacked\SOP Builder.exe
+Unpacked app (good for quick testing)
+For your team (no npm start)
+Share SOP Builder Setup 1.0.0.exe or the portable exe via Teams/SharePoint. They install or run it like any Windows app.
+
+Windows may show a SmartScreen warning because the app isn't code-signed yet — that's normal for internal tools. Click More info → Run anyway.
+
+For you (when you change code)
+Build a fresh exe once per release:
+
+npm install
+npm run dist
+Output goes to the dist/ folder.
+
+Why npm start existed before
+npm start = developer mode (needs Node.js + source code)
+npm run dist = packages Electron + your app into a standalone .exe for everyone else
+The README is updated with both paths. Data folders (data/, screenshots/, exports/) are created next to the installed exe, so projects persist between runs.
+
+Try double-clicking dist\SOP Builder 1.0.0.exe — it should open without Node.js. If you want, I can push these packaging changes to GitHub and attach the exe as a Release for the team to download.

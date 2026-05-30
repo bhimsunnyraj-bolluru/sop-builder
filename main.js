@@ -4,6 +4,7 @@ const fs=require("fs");
 const {takeScreenshot}=require("./src/screenshot");
 const {getSapGuiContext,formatStepDescription}=require("./src/sapgui-context");
 const {loadSettings,saveSettings}=require("./src/config");
+const {getProjectRoot,getScreenshotsDir,getSopsDir,ensureDir}=require("./paths");
 
 let mainWindow;
 let _normalBounds = null;
@@ -26,8 +27,7 @@ function createWindow(){
 
 async function runCapture(){
  if(!mainWindow) throw new Error("Main window not available");
- const screenshotsDir=path.join(__dirname, "screenshots");
- if(!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir,{recursive:true});
+ const screenshotsDir=ensureDir(getScreenshotsDir());
  const wasVisible = mainWindow.isVisible();
  const wasFocused = mainWindow.isFocused();
  if(wasVisible && wasFocused){
@@ -146,9 +146,9 @@ function exitAnnotateMode(){
 }
 
 ipcMain.handle("capture-sapgui", async () => runCapture());
-ipcMain.handle("get-settings", async () => loadSettings(__dirname));
+ipcMain.handle("get-settings", async () => loadSettings(getProjectRoot()));
 ipcMain.handle("save-settings", async (_event, settings) => {
- const merged = saveSettings(__dirname, settings || {});
+ const merged = saveSettings(getProjectRoot(), settings || {});
  const reg = registerCaptureHotkey(merged.captureHotkey);
  return { settings: merged, hotkey: reg };
 });
@@ -160,10 +160,8 @@ function sanitizeFileName(name){
  return (name || "SOP").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 80);
 }
 
-function getSopsDir(){
- const dir = path.join(__dirname, "data", "sops");
- if(!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
- return dir;
+function getSopsDirEnsured(){
+ return ensureDir(getSopsDir());
 }
 
 ipcMain.handle("save-project-dialog", async (_event, payload) => {
@@ -174,14 +172,14 @@ ipcMain.handle("save-project-dialog", async (_event, payload) => {
 
  if(existingPath && fs.existsSync(path.dirname(existingPath))){
   fs.writeFileSync(existingPath, JSON.stringify(project, null, 2));
-  const settings = loadSettings(__dirname);
-  saveSettings(__dirname, { ...settings, lastProjectPath: existingPath });
+  const settings = loadSettings(getProjectRoot());
+  saveSettings(getProjectRoot(), { ...settings, lastProjectPath: existingPath });
   return { ok: true, filePath: existingPath, fileName: path.basename(existingPath) };
  }
 
  const result = await dialog.showSaveDialog(mainWindow, {
   title: "Save SOP Project",
-  defaultPath: path.join(getSopsDir(), suggested),
+  defaultPath: path.join(getSopsDirEnsured(), suggested),
   filters: [{ name: "SOP Project", extensions: ["json"] }],
  });
  if(result.canceled || !result.filePath) return { ok: false, canceled: true };
@@ -189,17 +187,17 @@ ipcMain.handle("save-project-dialog", async (_event, payload) => {
  let filePath = result.filePath;
  if(!filePath.toLowerCase().endsWith(".json")) filePath += ".json";
  fs.writeFileSync(filePath, JSON.stringify(project, null, 2));
- const settings = loadSettings(__dirname);
- saveSettings(__dirname, { ...settings, lastProjectPath: filePath });
+ const settings = loadSettings(getProjectRoot());
+ saveSettings(getProjectRoot(), { ...settings, lastProjectPath: filePath });
  return { ok: true, filePath, fileName: path.basename(filePath) };
 });
 
 ipcMain.handle("load-project-dialog", async () => {
  if(!mainWindow) throw new Error("Main window not available");
- const settings = loadSettings(__dirname);
+ const settings = loadSettings(getProjectRoot());
  const defaultPath = (settings.lastProjectPath && fs.existsSync(settings.lastProjectPath))
   ? path.dirname(settings.lastProjectPath)
-  : getSopsDir();
+  : getSopsDirEnsured();
 
  const result = await dialog.showOpenDialog(mainWindow, {
   title: "Open SOP Project",
@@ -213,12 +211,12 @@ ipcMain.handle("load-project-dialog", async () => {
 
  const filePath = result.filePaths[0];
  const project = JSON.parse(fs.readFileSync(filePath, "utf8"));
- saveSettings(__dirname, { ...settings, lastProjectPath: filePath });
+ saveSettings(getProjectRoot(), { ...settings, lastProjectPath: filePath });
  return { ok: true, filePath, fileName: path.basename(filePath), project };
 });
 
 ipcMain.handle("load-last-project", async () => {
- const settings = loadSettings(__dirname);
+ const settings = loadSettings(getProjectRoot());
  const filePath = settings.lastProjectPath;
  if(!filePath || !fs.existsSync(filePath)) return { ok: false };
  const project = JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -227,7 +225,7 @@ ipcMain.handle("load-last-project", async () => {
 
 app.whenReady().then(()=>{
  createWindow();
- const settings = loadSettings(__dirname);
+ const settings = loadSettings(getProjectRoot());
  registerCaptureHotkey(settings.captureHotkey);
 });
 app.on("will-quit", ()=>{ globalShortcut.unregisterAll(); });

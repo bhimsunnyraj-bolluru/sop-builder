@@ -12,6 +12,7 @@ const {
 const fsExporter = require("fs");
 const path = require("path");
 const sizeOf = require("image-size");
+const { getExportsDir, ensureDir } = require("../paths");
 
 function sanitizeFileName(name) {
 	return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120);
@@ -40,6 +41,13 @@ function metaLine(label, value) {
 
 function imageParagraph(imagePath) {
 	if (!imagePath || !fsExporter.existsSync(imagePath)) return null;
+	let stat;
+	try {
+		stat = fsExporter.statSync(imagePath);
+	} catch {
+		return null;
+	}
+	if (!stat.isFile()) return null;
 	const img = fsExporter.readFileSync(imagePath);
 	const maxWidth = 600;
 	let width = maxWidth;
@@ -114,8 +122,7 @@ async function exportWord(project) {
 		if (imgPara) children.push(imgPara);
 	}
 
-	const exportsDir = path.join(process.cwd(), "exports");
-	if (!fsExporter.existsSync(exportsDir)) fsExporter.mkdirSync(exportsDir, { recursive: true });
+	const exportsDir = ensureDir(getExportsDir());
 
 	const fileName = sanitizeFileName(project.title || "SOP") + ".docx";
 	const outPath = path.join(exportsDir, fileName);

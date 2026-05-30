@@ -2,6 +2,7 @@ const {ipcRenderer}=require("electron");
 const fs=require("fs");
 const path=require("path");
 const { pathToFileURL } = require('url');
+const { getDataDir, getExportsDir, ensureDir } = require("../paths");
 const {
 	initAnnotator,
 	openAnnotator,
@@ -28,10 +29,6 @@ let _pendingAnnotateIndex = -1;
 let _inAnnotateFlow = false;
 let _currentProjectPath = "";
 
-function ensureDir(dir){
- if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true});
-}
-
 function setStatus(message, type="info"){
  const status=document.getElementById("status");
  if(!status) return;
@@ -56,7 +53,8 @@ function syncUIToProject(){
  document.getElementById("title").value = project.title || "";
  document.getElementById("author").value = project.author || "";
  document.getElementById("version").value = project.version || "1.0";
- document.getElementById("reviewDate").value = project.reviewDate || todayDateIso();
+ if(!project.reviewDate) project.reviewDate = todayDateIso();
+ document.getElementById("reviewDate").value = project.reviewDate;
 }
 
 function updateCaptureButtonTitle(){
@@ -359,6 +357,7 @@ async function loadProject(){
   if(!result.ok || !result.project) throw new Error("Load failed");
   project = result.project;
   if(!project.version) project.version = "1.0";
+  if(!project.reviewDate) project.reviewDate = todayDateIso();
   if(!project.steps) project.steps = [];
   _currentProjectPath = result.filePath;
   syncUIToProject();
@@ -376,6 +375,7 @@ async function loadLastProjectOnBoot(){
   if(result.ok && result.project){
    project = result.project;
    if(!project.version) project.version = "1.0";
+   if(!project.reviewDate) project.reviewDate = todayDateIso();
    if(!project.steps) project.steps = [];
    _currentProjectPath = result.filePath;
    syncUIToProject();
@@ -383,10 +383,11 @@ async function loadLastProjectOnBoot(){
    setStatus(`Resumed: ${result.fileName}`, "success");
    return;
   }
-  const legacyPath = path.join(__dirname, "..", "data", "project.json");
+  const legacyPath = path.join(getDataDir(), "project.json");
   if(fs.existsSync(legacyPath)){
    project = JSON.parse(fs.readFileSync(legacyPath, "utf8"));
    if(!project.version) project.version = "1.0";
+   if(!project.reviewDate) project.reviewDate = todayDateIso();
    if(!project.steps) project.steps = [];
    syncUIToProject();
    renderDeferred();
@@ -394,6 +395,7 @@ async function loadLastProjectOnBoot(){
    return;
   }
   renderDeferred();
+  syncUIToProject();
   setStatus("Ready — start a new SOP or open an existing one.", "info");
  }catch(err){
   setStatus("Could not resume last project: "+err.message, "error");
@@ -405,7 +407,7 @@ async function exportDoc(){
  setBusy(true);
  setStatus("Exporting Word document...", "loading");
  try{
-  ensureDir(path.join(__dirname, "..", "exports"));
+  ensureDir(getExportsDir());
   const { exportWord } = require("./exporter");
   const outPath = await exportWord(project);
   setStatus(`DOCX exported: ${outPath}`, "success");
@@ -603,6 +605,7 @@ function boot(){
   setupOtherEventListeners();
   initAnnotator();
   setupHotkeyRecorder();
+  syncUIToProject();
   renderDeferred();
   setStatus("Starting...", "loading");
   loadInitialSettings();

@@ -1,15 +1,58 @@
 {
   "name": "sop-builder",
   "version": "1.0.0",
+  "description": "Capture, annotate, and export SAP GUI Standard Operating Procedures",
+  "author": "Business Core Solutions",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.businesscore.sopbuilder",
+    "productName": "SOP Builder",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "paths.js",
+      "src/**/*",
+      "scripts/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "scripts/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "SOP Builder"
+    }
   },
   "dependencies": {
     "docx": "^9.0.0",
-    "electron": "^42.3.0",
-    "screenshot-desktop": "^1.15.0",
     "image-size": "^1.0.1",
+    "screenshot-desktop": "^1.15.0",
     "sortablejs": "^1.15.0"
+  },
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-builder": "^25.1.8"
   }
 }
