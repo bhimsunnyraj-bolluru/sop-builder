@@ -2,7 +2,8 @@ const {app,BrowserWindow,ipcMain,globalShortcut,dialog} = require("electron");
 const path=require("path");
 const fs=require("fs");
 const {takeScreenshot}=require("./src/screenshot");
-const {getSapGuiContext,formatStepDescription}=require("./src/sapgui-context");
+const {getSapGuiContext,formatStepDescription,describeCaptureContext}=require("./src/sapgui-context");
+const {readStatusBarFromScreenshot}=require("./src/statusbar-ocr");
 const {loadSettings,saveSettings}=require("./src/config");
 const {getProjectRoot,getScreenshotsDir,getSopsDir,ensureDir}=require("./paths");
 
@@ -37,11 +38,20 @@ async function runCapture(){
  const context = await getSapGuiContext();
  const file=path.join(screenshotsDir, `${Date.now()}.png`);
  await takeScreenshot(file);
+
+ if(!context.statusBar){
+  const ocrText = await readStatusBarFromScreenshot(file, context.sapWindowRect);
+  if(ocrText){
+   context.statusBar = ocrText;
+   context.source = context.source && context.source !== "none" ? `${context.source}+ocr` : "ocr";
+  }
+ }
+
  if(wasVisible){
   try{ mainWindow.show(); if(!wasFocused) mainWindow.blur(); else mainWindow.focus(); }catch(e){}
  }
  const title = formatStepDescription(context);
- return { file, title, context };
+ return { file, title, context, contextDetail: describeCaptureContext(context) };
 }
 
 function registerCaptureHotkey(accelerator){

@@ -11,7 +11,7 @@ Think of it as a lightweight Scribe-style tool focused on SAP process documentat
 | Feature | Description |
 |---------|-------------|
 | **Screenshot capture** | Capture the active SAP GUI window while you work |
-| **SAP context detection** | Auto-fills step titles from window name, transaction code, and status bar (when SAP Scripting is enabled) |
+| **SAP context detection** | Auto-fills step titles from SAP window name, status bar (UI Automation/OCR), and transaction code when SAP Scripting is enabled |
 | **Global hotkey** | Configurable shortcut (default `Alt+C`) to capture without clicking the app |
 | **Compact mode** | Shrinks to a floating toolbar so SAP stays in focus |
 | **Annotation tools** | Box, arrow, highlight, numbered callouts, and text labels |
@@ -177,15 +177,47 @@ sop-builder/
 
 ---
 
-## SAP GUI Scripting (Optional)
+## SAP context detection
 
-For automatic transaction codes and status bar text in step titles:
+When you capture a step, SOP Builder reads SAP metadata and fills the step description automatically.
 
-1. In SAP GUI: **Options → Accessibility & Scripting → Scripting**
-2. Enable **Enable scripting**
-3. Confirm security prompts when connecting
+| Source | What you get | When |
+|--------|----------------|------|
+| **Win32** | SAP window title (e.g. `Create Standard Order: Overview`) | Always |
+| **UI Automation** | Status bar (e.g. `Standard Order 6676 has been saved.`) | Usually — no SAP Scripting required |
+| **Screenshot OCR** | Status bar text from the captured image | Fallback if UI Automation misses it |
+| **SAP Scripting** | Window title + **t-code** (e.g. `VA01`) + **system** + status bar | SAP GUI + server scripting enabled |
 
-Without scripting, step titles still use the SAP window title from Windows APIs.
+Example step title with scripting enabled:
+
+`Create Sales Documents (VA01) [TS4] — Standard Order 4500012345 has been saved`
+
+The text after `—` comes from the **SAP GUI status bar** (bottom of the screen), including messages like a newly created sales order number after you click **Save** in VA01.
+
+**Workflow for VA01 save step:** click **Save** in SAP → wait for the status bar message → press **`Alt+C`** (or **Capture**) while SAP is still showing that message.
+
+After capture, the status bar shows what was detected (e.g. `UI Automation: window title, status bar` or `SAP Scripting: window title, t-code VA01, status bar`). Each step shows a meta line under the description (e.g. `status · status detected` or `VA01 · scripting`).
+
+### Enable SAP GUI Scripting
+
+**On your PC (SAP Logon / SAP GUI):**
+
+1. Open **Options → Accessibility & Scripting → Scripting**
+2. Check **Enable scripting**
+3. Set security to allow scripting (confirm prompts when SOP Builder captures)
+
+**On the SAP system (often required — ask your SAP Basis team):**
+
+- Parameter `sapgui/user_scripting` must be `TRUE` on the application server
+- Your user may need scripting allowed in transaction **RZ11** / user profile settings
+
+Without server-side scripting, you still get the **window title only** (`source: win32` in saved projects).
+
+### Tips
+
+- Click the SAP screen you want **before** pressing `Alt+C` or **Capture**
+- Use **Compact** mode so SOP Builder hides before the screenshot
+- Type your own text in **Step description** before capture to override auto-detection
 
 ---
 
@@ -222,7 +254,9 @@ Example `data/settings.json`:
 | App won't start | Run `npm install` again; ensure Node.js 18+ is installed |
 | Capture shows wrong window | Focus SAP GUI before capturing; use compact mode |
 | Hotkey doesn't work | Change hotkey in Settings; avoid conflicts with SAP/other tools |
-| Empty step title | Enable SAP GUI Scripting, or type the description before capture |
+| Empty step title | Focus SAP before capture; enable SAP GUI Scripting for t-code/status bar; or type Step description first |
+| Only window title, no status bar | Capture right after Save while the green status message is visible; restart app for latest detection |
+| Only window title, no t-code | SAP Scripting not enabled on client or server — see [SAP context detection](#sap-context-detection) |
 | Export fails | Ensure each step has a valid screenshot path on disk |
 
 ---
@@ -240,31 +274,4 @@ Main technologies: **Electron**, **electron-builder**, **docx**, **screenshot-de
 
 ## License
 
-What changed
-Packaging is now configured with electron-builder. I built the Windows installers on your machine:
-
-File	Use
-dist\SOP Builder Setup 1.0.0.exe
-Installer — teammates double-click, no Node.js
-dist\SOP Builder 1.0.0.exe
-Portable — single file, no install
-dist\win-unpacked\SOP Builder.exe
-Unpacked app (good for quick testing)
-For your team (no npm start)
-Share SOP Builder Setup 1.0.0.exe or the portable exe via Teams/SharePoint. They install or run it like any Windows app.
-
-Windows may show a SmartScreen warning because the app isn't code-signed yet — that's normal for internal tools. Click More info → Run anyway.
-
-For you (when you change code)
-Build a fresh exe once per release:
-
-npm install
-npm run dist
-Output goes to the dist/ folder.
-
-Why npm start existed before
-npm start = developer mode (needs Node.js + source code)
-npm run dist = packages Electron + your app into a standalone .exe for everyone else
-The README is updated with both paths. Data folders (data/, screenshots/, exports/) are created next to the installed exe, so projects persist between runs.
-
-Try double-clicking dist\SOP Builder 1.0.0.exe — it should open without Node.js. If you want, I can push these packaging changes to GitHub and attach the exe as a Release for the team to download.
+Internal use — Business Core Solutions. Contact your team lead for distribution and usage guidelines.

@@ -3,6 +3,7 @@ const fs=require("fs");
 const path=require("path");
 const { pathToFileURL } = require('url');
 const { getDataDir, getExportsDir, ensureDir } = require("../paths");
+const { formatStepDescription, describeCaptureContext } = require("./sapgui-context");
 const {
 	initAnnotator,
 	openAnnotator,
@@ -67,6 +68,23 @@ function updateCaptureButtonTitle(){
 
 function displayHotkey(accelerator){
  return (accelerator || "").replace(/CommandOrControl/g, "Ctrl");
+}
+
+function formatSapContextMeta(ctx){
+ if(!ctx) return "";
+ const parts = [];
+ if(ctx.transaction) parts.push(ctx.transaction);
+ if(ctx.systemName) parts.push(ctx.systemName);
+ if(ctx.statusBar) parts.push("status");
+ if(ctx.source && String(ctx.source).includes("ocr")) parts.push("OCR");
+ if(ctx.source && (ctx.source.includes("scripting") || ctx.source.includes("sap-scripting"))){
+  parts.push("scripting");
+ } else if(ctx.source && (ctx.source.includes("uia") || ctx.source.includes("child"))){
+  parts.push("status detected");
+ } else if(ctx.source === "win32" || !ctx.statusBar){
+  parts.push("window only");
+ }
+ return parts.length ? parts.join(" · ") : "";
 }
 
 function getSortable(){
@@ -135,7 +153,7 @@ function render(){
     <div class="handle" title="Drag">≡</div>
     <div class="num">${i+1}</div>
     <div class="thumb-container"></div>
-    <div class="desc">${escapeHtml(s.description||"")}</div>
+    <div class="desc">${escapeHtml(s.description||"")}${formatSapContextMeta(s.sapContext) ? `<div class="step-meta">${escapeHtml(formatSapContextMeta(s.sapContext))}</div>` : ""}</div>
     <div class="step-actions">
       <button type="button" data-step-action="annotate" data-index="${i}" title="Annotate screenshot">🖊️</button>
       <button type="button" data-step-action="edit" data-index="${i}" title="Edit description">✏️</button>
@@ -282,24 +300,27 @@ async function captureStep(){
 
 function applyCaptureResult(res, inputDesc="", openAnnotatorAfter=false){
  const file = (res && res.file) ? res.file : res;
- const desc = inputDesc || (res && res.title) || "";
+ const context = res && res.context ? res.context : null;
+ const autoDesc = context ? formatStepDescription(context) : (res && res.title) || "";
+ const desc = inputDesc || autoDesc || "";
  syncProjectFromUI();
  const step = {description:desc, image:file};
- if(res && res.context) step.sapContext = res.context;
+ if(context) step.sapContext = context;
  project.steps.push(step);
  document.getElementById("stepDesc").value="";
  const stepIndex = project.steps.length - 1;
  render();
 
- const source = (res && res.context && res.context.source) ? res.context.source : "unknown";
+ const source = (context && context.source) ? context.source : "unknown";
  const detail = desc ? `"${desc}"` : "no title detected";
+ const contextDetail = (res && res.contextDetail) || describeCaptureContext(context);
 
  if(openAnnotatorAfter && file){
   _pendingAnnotateIndex = stepIndex;
-  setStatus(`Step captured (${source}): ${detail}. Opening full-screen annotator...`);
+  setStatus(`Step captured (${source}): ${detail}${contextDetail}. Opening full-screen annotator...`);
   startAnnotateFlow(file, stepIndex, ()=> onAnnotatorSaved(stepIndex));
  } else {
-  setStatus(`Step captured (${source}): ${detail}.`);
+  setStatus(`Step captured (${source}): ${detail}${contextDetail}.`);
  }
 }
 
