@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# User-generated content
+screenshots/*
+!screenshots/.gitkeep
+exports/*
+!exports/.gitkeep
+data/sops/*
+!data/sops/.gitkeep
+data/project.json
+data/settings.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>SOP Builder | Business Core Solutions</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" />
+		<link rel="stylesheet" href="theme.css" />
+	</head>
+	<body>
+		<header class="app-header">
+			<div class="brand">
+				<span class="brand-mark">SOP</span>
+				<div>
+					<h1>SOP Builder</h1>
+					<p class="brand-tagline">Capture, annotate &amp; document SAP processes</p>
+				</div>
+			</div>
+		</header>
+
+		<div class="compact-bar">
+			<button id="compactBtn" type="button" class="tool-btn" data-action="compact" title="Restore window">⤴</button>
+			<button type="button" class="tool-btn small" data-action="new" title="New SOP">➕</button>
+			<button id="captureBtn" type="button" class="tool-btn small tool-btn-accent" data-action="capture" title="Capture screenshot">📷</button>
+			<button type="button" class="tool-btn small" data-action="save" title="Save SOP project">💾</button>
+			<button type="button" class="tool-btn small" data-action="load" title="Open SOP project">📂</button>
+			<button type="button" class="tool-btn small" data-action="export" title="Export DOCX">📘</button>
+			<button type="button" class="tool-btn small" data-action="settings" title="Settings">⚙️</button>
+		</div>
+
+		<main class="app-main">
+			<section class="panel">
+				<div class="panel-label">SOP Details</div>
+				<div class="meta-row">
+					<input id="author" placeholder="Author" title="Author" />
+					<input id="version" placeholder="Version (e.g. 1.0)" title="Version" />
+					<input id="reviewDate" type="date" title="Review Date" />
+				</div>
+			</section>
+
+			<section class="panel">
+				<div class="panel-label">Recording</div>
+				<div class="toolbar">
+					<input id="title" placeholder="SOP Title (e.g. VA01)" />
+					<input id="stepDesc" placeholder="Step description (optional)" />
+					<button id="compactBtnMain" type="button" class="tool-btn" data-action="compact" title="Compact floating mode">🔳 Compact</button>
+					<button type="button" class="tool-btn" data-action="new" title="New SOP">➕ New</button>
+					<button id="captureBtnMain" type="button" class="tool-btn tool-btn-accent" data-action="capture" title="Capture screenshot">📷 Capture</button>
+					<button type="button" class="tool-btn" data-action="save" title="Save SOP project (.json)">💾 Save</button>
+					<button type="button" class="tool-btn" data-action="load" title="Open saved SOP project">📂 Open</button>
+					<button type="button" class="tool-btn" data-action="export" title="Export Word document">📘 Export</button>
+					<button type="button" class="tool-btn" data-action="settings" title="Settings">⚙️</button>
+				</div>
+			</section>
+
+			<div id="status" class="status-info"></div>
+
+			<section class="panel" id="steps-container">
+				<div class="panel-label">Steps</div>
+				<div id="steps" class="steps-list"></div>
+			</section>
+		</main>
+
+		<div id="settingsModal" class="modal-overlay">
+			<div class="modal-box">
+				<h2>Settings</h2>
+				<label for="hotkeyInput"><strong>Capture hotkey</strong> — click the field and press your key combo</label>
+				<input id="hotkeyInput" class="hotkey-input" readonly placeholder="Press a key combination..." />
+				<div class="hotkey-presets">
+					<button type="button" data-hotkey="Alt+C">Alt+C</button>
+					<button type="button" data-hotkey="CommandOrControl+Shift+S">Ctrl+Shift+S</button>
+					<button type="button" data-hotkey="CommandOrControl+Shift+C">Ctrl+Shift+C</button>
+					<button type="button" data-hotkey="F9">F9</button>
+					<button type="button" data-hotkey="F10">F10</button>
+				</div>
+				<p id="hotkeyStatus"></p>
+				<div class="modal-actions">
+					<button type="button" data-action="settings-cancel">Cancel</button>
+					<button type="button" class="primary" data-action="settings-save">Save</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="confirmModal" class="modal-overlay">
+			<div class="modal-box">
+				<h2 id="confirmTitle">Confirm</h2>
+				<p id="confirmMessage" style="margin:0;color:var(--text-secondary);font-size:0.92rem"></p>
+				<div class="modal-actions">
+					<button type="button" data-action="confirm-cancel">Cancel</button>
+					<button type="button" class="primary" data-action="confirm-ok">Continue</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="annotatorModal" class="modal-overlay">
+			<div class="modal-box wide">
+				<div class="annot-header">
+					<div>
+						<h2 id="annotStepTitle">Annotate screenshot</h2>
+						<p id="annotStepSub">Mark up the screenshot, then click Done — or Skip if no markup is needed.</p>
+					</div>
+					<div class="annot-header-actions">
+						<button type="button" class="ghost" data-action="annot-skip">Skip</button>
+						<button type="button" class="primary" data-action="annot-save">Done ✓</button>
+					</div>
+				</div>
+
+				<div class="annot-toolbar">
+					<div class="annot-tool-group" style="display:flex;gap:6px;flex-wrap:wrap">
+						<button type="button" class="annot-tool tool-btn active" data-tool="rect" title="Keyboard: 1">▭ Box</button>
+						<button type="button" class="annot-tool tool-btn" data-tool="arrow" title="Keyboard: 2">→ Arrow</button>
+						<button type="button" class="annot-tool tool-btn" data-tool="highlight" title="Keyboard: 3">🖍 Highlight</button>
+						<button type="button" class="annot-tool tool-btn" data-tool="number" title="Keyboard: 4">① Number</button>
+						<button type="button" class="annot-tool tool-btn" data-tool="text" title="Keyboard: 5">T Label</button>
+					</div>
+					<div class="annot-sep"></div>
+					<div class="annot-colors" style="display:flex;gap:6px;align-items:center">
+						<button type="button" class="annot-color active" data-color="#f97316" title="Orange" style="width:28px;height:28px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #ccc;padding:0;background:#f97316;cursor:pointer"></button>
+						<button type="button" class="annot-color" data-color="#8b5cf6" title="Purple" style="width:28px;height:28px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #ccc;padding:0;background:#8b5cf6;cursor:pointer"></button>
+						<button type="button" class="annot-color" data-color="#3b82f6" title="Blue" style="width:28px;height:28px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #ccc;padding:0;background:#3b82f6;cursor:pointer"></button>
+						<button type="button" class="annot-color" data-color="#10b981" title="Green" style="width:28px;height:28px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #ccc;padding:0;background:#10b981;cursor:pointer"></button>
+						<input type="color" id="annotColor" value="#f97316" title="Custom color" style="width:32px;height:32px;border:none;padding:0;cursor:pointer;background:transparent" />
+					</div>
+					<div class="annot-sep"></div>
+					<button type="button" class="tool-btn" data-action="annot-undo" title="Undo (Ctrl+Z)">↩ Undo</button>
+					<button type="button" class="tool-btn" data-action="annot-clear" title="Clear all markup">Clear all</button>
+					<p id="annotToolHint">Click and drag to draw a box around a button or field</p>
+				</div>
+
+				<div class="annot-canvas-wrap">
+					<canvas id="annotCanvas"></canvas>
+				</div>
+			</div>
+		</div>
+
+		<div id="annotTextEditor">
+			<input id="annotTextInput" type="text" placeholder="Type label text..." />
+			<button type="button" id="annotTextOk" class="primary">Add</button>
+			<button type="button" id="annotTextCancel">Cancel</button>
+		</div>
+
+		<script src="App.js"></script>
+	</body>
+</html>
