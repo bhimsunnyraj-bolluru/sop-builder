@@ -10,6 +10,9 @@ data/sops/*
 !data/sops/.gitkeep
 data/project.json
 data/settings.json
+data/label-cache.json
+data/capture.log
+data/snapshot-last.json
 
 # Build output
 dist/

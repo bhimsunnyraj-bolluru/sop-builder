@@ -1,4 +1,7 @@
 {
   "captureHotkey": "Alt+C",
-  "lastProjectPath": ""
+  "sessionHotkey": "CommandOrControl+Shift+S",
+  "lastProjectPath": "",
+  "maxCaptureFields": 10,
+  "captureTarget": "sap"
 }

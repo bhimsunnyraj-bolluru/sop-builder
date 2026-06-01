@@ -1,5 +1,12 @@
 # Returns JSON with SAP GUI window / session context for SOP step descriptions.
-# Strategies (in order): SAP GUI Scripting COM, Win32 foreground + parent walk, SAP window enum.
+# Usage: -CaptureMode Sap | NonSap
+#   Sap    — SAP GUI foreground, scripting, status bar
+#   NonSap — active foreground window only (any app; no SAP focus or scripting)
+param(
+    [ValidateSet('Sap', 'NonSap')]
+    [string]$CaptureMode = 'Sap'
+)
+
 $ErrorActionPreference = 'Stop'
 
 Add-Type @"
@@ -78,6 +85,33 @@ public class SapWin32 {
         return IntPtr.Zero;
     }
 
+    public static IntPtr GetTopLevelWindow(IntPtr hWnd) {
+        if (hWnd == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr root = hWnd;
+        IntPtr current = hWnd;
+        while (current != IntPtr.Zero) {
+            root = current;
+            IntPtr parent = GetParent(current);
+            if (parent == IntPtr.Zero) break;
+            current = parent;
+        }
+        return root;
+    }
+
+    public static string BestWindowTitle(IntPtr hWnd) {
+        if (hWnd == IntPtr.Zero) return "";
+        var best = "";
+        var current = hWnd;
+        while (current != IntPtr.Zero) {
+            var text = ReadWindowText(current);
+            if (!string.IsNullOrWhiteSpace(text) && text.Length > best.Length) {
+                best = text;
+            }
+            current = GetParent(current);
+        }
+        return best;
+    }
+
     public static List<IntPtr> EnumSapWindows() {
         var list = new List<IntPtr>();
         EnumWindows((hWnd, lParam) => {
@@ -86,6 +120,26 @@ public class SapWin32 {
             return true;
         }, IntPtr.Zero);
         return list;
+    }
+
+    public static string FindBestBrowserWindowTitle(string excludeTitleContains) {
+        string bestTitle = "";
+        EnumWindows((hWnd, lParam) => {
+            if (!IsWindowVisible(hWnd)) return true;
+            var cls = ReadClassName(hWnd);
+            if (cls != "Chrome_WidgetWin_1" && cls != "MozillaWindowClass" && cls != "ApplicationFrameWindow") return true;
+            var t = ReadWindowText(hWnd);
+            if (string.IsNullOrWhiteSpace(t)) return true;
+            if (!string.IsNullOrEmpty(excludeTitleContains) &&
+                t.ToLower().IndexOf(excludeTitleContains.ToLower()) >= 0) return true;
+            var tl = t.ToLower();
+            if (tl.IndexOf(" - cursor") >= 0) return true;
+            if (tl.IndexOf("visual studio code") >= 0) return true;
+            if (tl.IndexOf("sop builder") >= 0) return true;
+            if (t.Length > bestTitle.Length) bestTitle = t;
+            return true;
+        }, IntPtr.Zero);
+        return bestTitle;
     }
 
     public class TextCandidate {
@@ -330,6 +384,112 @@ function Get-SapStatusBarUia {
     }
 }
 
+function Get-UiaWindowName {
+    param([IntPtr]$Hwnd)
+    if ($Hwnd -eq [IntPtr]::Zero) { return "" }
+    try {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+        $ae = [System.Windows.Automation.AutomationElement]::FromHandle($Hwnd)
+        if ($null -eq $ae) { return "" }
+        $name = [string]$ae.Current.Name
+        if ($name.Trim().Length -gt 0) { return $name.Trim() }
+    } catch {}
+    return ""
+}
+
+function Test-OwnAppTitle {
+    param([string]$Title)
+    return ($Title -match '(?i)\bSOP Builder\b')
+}
+
+function Test-ExcludedNonBrowserTitle {
+    param([string]$Title)
+    if (-not $Title) { return $true }
+    if (Test-OwnAppTitle $Title) { return $true }
+    if ($Title -match '(?i)\s-\s*Cursor\s*$') { return $true }
+    if ($Title -match '(?i)Visual Studio Code') { return $true }
+    return $false
+}
+
+function Test-InvalidCaptureForeground {
+    param([string]$Title, [string]$Class)
+    if ($Class -eq "SAP_FRONTEND_SESSION") { return $false }
+    if (Test-ExcludedNonBrowserTitle $Title) { return $true }
+    if ($Class -eq "Chrome_WidgetWin_1" -and (Test-ExcludedNonBrowserTitle $Title)) { return $true }
+    return $false
+}
+
+function Get-BestSapWindow {
+    $sapWindows = [SapWin32]::EnumSapWindows()
+    $best = [IntPtr]::Zero
+    $bestTitle = ""
+    foreach ($h in $sapWindows) {
+        $t = [SapWin32]::ReadWindowText($h)
+        if ($t -and $t -ne "SAP" -and $t.Length -gt $bestTitle.Length) {
+            $best = $h
+            $bestTitle = $t
+        }
+    }
+    if ($best -eq [IntPtr]::Zero -and $sapWindows.Count -gt 0) {
+        $best = $sapWindows[0]
+        $bestTitle = [SapWin32]::ReadWindowText($best)
+    }
+    if ($best -eq [IntPtr]::Zero) { return $null }
+    return @{ Handle = $best; Title = $bestTitle; Class = "SAP_FRONTEND_SESSION" }
+}
+
+function Find-BrowserRoot {
+    param([IntPtr]$Hwnd)
+    $classes = @("Chrome_WidgetWin_1", "MozillaWindowClass", "ApplicationFrameWindow")
+    $current = $Hwnd
+    while ($current -ne [IntPtr]::Zero) {
+        $cls = [SapWin32]::ReadClassName($current)
+        if ($classes -contains $cls) { return $current }
+        $current = [SapWin32]::GetParent($current)
+    }
+    return [IntPtr]::Zero
+}
+
+function Find-BestVisibleBrowserWindow {
+    $title = [SapWin32]::FindBestBrowserWindowTitle("SOP Builder")
+    if (-not $title) { return $null }
+    return @{ Handle = [IntPtr]::Zero; Title = $title; Class = "Chrome_WidgetWin_1" }
+}
+
+function Resolve-ForegroundTarget {
+    param([IntPtr]$Fg)
+    if ($Fg -eq [IntPtr]::Zero) { return $null }
+
+    # Never treat SAP as a browser — skip Chrome ancestor walk for SAP GUI
+    $sapRoot = [SapWin32]::FindSapRoot($Fg)
+    if ($sapRoot -ne [IntPtr]::Zero) {
+        $title = [SapWin32]::ReadWindowText($sapRoot)
+        if (-not $title) { $title = [SapWin32]::BestWindowTitle($sapRoot) }
+        return @{ Handle = $sapRoot; Title = $title; Class = "SAP_FRONTEND_SESSION" }
+    }
+
+    $browserRoot = Find-BrowserRoot $Fg
+    if ($browserRoot -ne [IntPtr]::Zero) { $Fg = $browserRoot }
+
+    $top = [SapWin32]::GetTopLevelWindow($Fg)
+    if ($top -ne [IntPtr]::Zero) { $Fg = $top }
+
+    $cls = [SapWin32]::ReadClassName($Fg)
+    $title = [SapWin32]::BestWindowTitle($Fg)
+    if (-not $title) { $title = [SapWin32]::ReadWindowText($Fg) }
+    if (-not $title) { $title = Get-UiaWindowName $Fg }
+
+    if (Test-ExcludedNonBrowserTitle $title) {
+        $fallback = Find-BestVisibleBrowserWindow
+        if ($null -ne $fallback -and -not (Test-ExcludedNonBrowserTitle $fallback.Title)) {
+            return $fallback
+        }
+        return @{ Handle = $Fg; Title = ""; Class = $cls }
+    }
+
+    return @{ Handle = $Fg; Title = $title; Class = $cls }
+}
+
 function Get-SapWindowRectJson {
     param([IntPtr]$SapRoot)
     if ($SapRoot -eq [IntPtr]::Zero) { return $null }
@@ -343,10 +503,69 @@ function Get-SapWindowRectJson {
     }
 }
 
-# --- Win32: foreground SAP window ---
-$fg = [SapWin32]::GetForegroundWindow()
-$fgClass = [SapWin32]::ReadClassName($fg)
-$fgTitle = [SapWin32]::ReadWindowText($fg)
+# --- Non-SAP: whatever window is in front (Chrome, Edge, Calculator, Notepad, etc.) ---
+if ($CaptureMode -eq 'NonSap') {
+    $rawFg = [SapWin32]::GetForegroundWindow()
+    $hwnd = $rawFg
+    if ($hwnd -ne [IntPtr]::Zero) {
+        $top = [SapWin32]::GetTopLevelWindow($rawFg)
+        if ($top -ne [IntPtr]::Zero) { $hwnd = $top }
+    }
+    $cls = ""
+    $title = ""
+    $rect = $null
+    if ($hwnd -ne [IntPtr]::Zero) {
+        $cls = [SapWin32]::ReadClassName($hwnd)
+        $title = [SapWin32]::BestWindowTitle($hwnd)
+        if (-not $title) { $title = [SapWin32]::ReadWindowText($hwnd) }
+        if (-not $title) { $title = Get-UiaWindowName $hwnd }
+        if ((Test-OwnAppTitle $title) -and $rawFg -ne $hwnd) {
+            $alt = [SapWin32]::ReadWindowText($rawFg)
+            if ($alt -and -not (Test-OwnAppTitle $alt)) { $title = $alt }
+        }
+        $rect = Get-SapWindowRectJson $hwnd
+    }
+    $output = [ordered]@{
+        title          = $title
+        transaction    = ""
+        program        = ""
+        screenNumber   = ""
+        systemName     = ""
+        statusBar      = ""
+        windowClass    = $cls
+        sapWindowTitle = $title
+        source         = "win32-foreground"
+        foregroundIsSap = $false
+    }
+    if ($null -ne $rect) { $output.sapWindowRect = $rect }
+    $output | ConvertTo-Json -Compress
+    exit 0
+}
+
+# --- Win32: foreground window (SAP mode) ---
+$rawFg = [SapWin32]::GetForegroundWindow()
+$rawClass = [SapWin32]::ReadClassName($rawFg)
+$rawTitle = [SapWin32]::ReadWindowText($rawFg)
+$rawSapRoot = [SapWin32]::FindSapRoot($rawFg)
+
+if ($rawSapRoot -ne [IntPtr]::Zero) {
+    $fg = $rawSapRoot
+    $fgClass = "SAP_FRONTEND_SESSION"
+    $fgTitle = [SapWin32]::ReadWindowText($rawSapRoot)
+} else {
+    $resolved = Resolve-ForegroundTarget $rawFg
+    if ($null -ne $resolved) {
+        $fg = $resolved.Handle
+        $fgClass = $resolved.Class
+        $fgTitle = $resolved.Title
+        if ($fg -eq [IntPtr]::Zero) { $fg = $rawFg }
+    } else {
+        $fg = $rawFg
+        $fgClass = $rawClass
+        $fgTitle = $rawTitle
+    }
+}
+
 $sapRoot = [SapWin32]::FindSapRoot($fg)
 $sapRootTitle = ""
 $sapRootClass = ""
@@ -355,55 +574,59 @@ if ($sapRoot -ne [IntPtr]::Zero) {
     $sapRootClass = [SapWin32]::ReadClassName($sapRoot)
 }
 
-$win32Title = if ($sapRootTitle) { $sapRootTitle } elseif ($fgTitle) { $fgTitle } else { "" }
-$win32Class = if ($sapRootClass) { $sapRootClass } else { $fgClass }
+$foregroundIsSap = ($sapRoot -ne [IntPtr]::Zero)
 
-# If foreground is not SAP, prefer a visible SAP window that still looks active (often only one)
-if (-not $sapRootTitle) {
-    $sapWindows = [SapWin32]::EnumSapWindows()
-    foreach ($h in $sapWindows) {
-        $t = [SapWin32]::ReadWindowText($h)
-        if ($t -and $t -ne "SAP") {
-            $win32Title = $t
-            $win32Class = "SAP_FRONTEND_SESSION"
-            break
-        }
-    }
-    if (-not $win32Title -and $sapWindows.Count -gt 0) {
-        $win32Title = [SapWin32]::ReadWindowText($sapWindows[0])
-        $win32Class = "SAP_FRONTEND_SESSION"
-    }
+if ($foregroundIsSap) {
+    $win32Title = $sapRootTitle
+    $win32Class = $sapRootClass
+    $sapRootForRect = $sapRoot
+} else {
+    # Browser, Office, etc. — use actual foreground; do not substitute a background SAP window
+    $win32Title = $fgTitle
+    $win32Class = $fgClass
+    $sapRootForRect = $fg
 }
 
 $result = New-Result -WindowClass $win32Class -SapWindowTitle $win32Title -Source "win32"
 
-$sapRootForRect = $sapRoot
-if ($sapRootForRect -eq [IntPtr]::Zero -and $win32Class -eq "SAP_FRONTEND_SESSION") {
-    $sapWindows = [SapWin32]::EnumSapWindows()
-    if ($sapWindows.Count -gt 0) { $sapRootForRect = $sapWindows[0] }
+if ($foregroundIsSap) {
+    $win32Status = Get-SapStatusBarWin32 $sapRootForRect
+    if (-not $win32Status) {
+        $win32Status = Get-SapStatusBarUia $sapRootForRect
+        if ($win32Status) { $result.source = "win32+uia" }
+    } else {
+        $result.source = "win32+child"
+    }
+    if ($win32Status) {
+        $result.statusBar = $win32Status
+    }
 }
 
-$win32Status = Get-SapStatusBarWin32 $sapRootForRect
-if (-not $win32Status) {
-    $win32Status = Get-SapStatusBarUia $sapRootForRect
-    if ($win32Status) { $result.source = "win32+uia" }
-} else {
-    $result.source = "win32+child"
-}
-if ($win32Status) {
-    $result.statusBar = $win32Status
+$sapWindowRect = $null
+if ($foregroundIsSap) {
+    $sapWindowRect = Get-SapWindowRectJson $sapRootForRect
 }
 
-$sapWindowRect = Get-SapWindowRectJson $sapRootForRect
-
-# --- SAP GUI Scripting COM (transaction, status bar, system name) ---
+# --- SAP GUI Scripting COM — when SAP is foreground or promoted from open SAP window ---
+if ($foregroundIsSap) {
 try {
     Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue
     $sapGuiAuto = $null
-    try {
-        $sapGuiAuto = [System.Runtime.InteropServices.Marshal]::GetActiveObject("SAPGUI")
-    } catch {
-        $sapGuiAuto = [Microsoft.VisualBasic.Interaction]::GetObject("SAPGUI")
+    foreach ($progId in @("SapROTWr.SapROTWrapper", "SAPROTWr.SapROTWrapper")) {
+        try {
+            $wrapper = New-Object -ComObject $progId
+            if ($null -ne $wrapper) {
+                $sapGuiAuto = Invoke-ComMethod $wrapper "GetROTEntry" @("SAPGUI")
+                if ($null -ne $sapGuiAuto) { break }
+            }
+        } catch {}
+    }
+    if ($null -eq $sapGuiAuto) {
+        try {
+            $sapGuiAuto = [System.Runtime.InteropServices.Marshal]::GetActiveObject("SAPGUI")
+        } catch {
+            try { $sapGuiAuto = [Microsoft.VisualBasic.Interaction]::GetObject("SAPGUI") } catch {}
+        }
     }
 
     if ($null -ne $sapGuiAuto) {
@@ -458,13 +681,18 @@ try {
 } catch {
     # Scripting disabled or SAP not running — keep win32 result
 }
+}
 
 if (-not $result.sapWindowTitle -and $win32Title) {
     $result.sapWindowTitle = $win32Title
 }
+if ($win32Title) {
+    $result.title = $win32Title
+}
 
 $output = [ordered]@{}
 foreach ($key in $result.Keys) { $output[$key] = $result[$key] }
+$output.foregroundIsSap = $foregroundIsSap
 if ($null -ne $sapWindowRect) { $output.sapWindowRect = $sapWindowRect }
 
 $output | ConvertTo-Json -Compress

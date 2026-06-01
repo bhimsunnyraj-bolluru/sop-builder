@@ -48,6 +48,42 @@ function getPsScriptPath() {
 	return path.join(getProjectRoot(), "scripts", "get-sapgui-context.ps1");
 }
 
+function getSapSnapshotScriptPath() {
+	if (isPackaged()) {
+		return path.join(
+			process.resourcesPath,
+			"app.asar.unpacked",
+			"scripts",
+			"capture-sap-snapshot.ps1"
+		);
+	}
+	return path.join(getProjectRoot(), "scripts", "capture-sap-snapshot.ps1");
+}
+
+function getSapSnapshotVbsPath() {
+	if (isPackaged()) {
+		return path.join(
+			process.resourcesPath,
+			"app.asar.unpacked",
+			"scripts",
+			"capture-sap-snapshot.vbs"
+		);
+	}
+	return path.join(getProjectRoot(), "scripts", "capture-sap-snapshot.vbs");
+}
+
+function getFocusSapScriptPath() {
+	if (isPackaged()) {
+		return path.join(
+			process.resourcesPath,
+			"app.asar.unpacked",
+			"scripts",
+			"focus-sap-window.ps1"
+		);
+	}
+	return path.join(getProjectRoot(), "scripts", "focus-sap-window.ps1");
+}
+
 function ensureDir(dir) {
 	if (fs.existsSync(dir)) {
 		if (!fs.statSync(dir).isDirectory()) {
@@ -67,5 +103,8 @@ module.exports = {
 	getSopsDir,
 	getExportsDir,
 	getPsScriptPath,
+	getSapSnapshotScriptPath,
+	getSapSnapshotVbsPath,
+	getFocusSapScriptPath,
 	ensureDir,
 };

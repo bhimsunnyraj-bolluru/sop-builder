@@ -3,7 +3,8 @@ const fs=require("fs");
 const path=require("path");
 const { pathToFileURL } = require('url');
 const { getDataDir, getExportsDir, ensureDir } = require("../paths");
-const { formatStepDescription, describeCaptureContext } = require("./sapgui-context");
+const { formatStepDescription, describeCaptureContext, isSapSuccessStatusBar, isSapForegroundContext } = require("./sapgui-context");
+const { formatChangePhrase, descriptionListsChanges } = require("./modules/recording/sessionRecorder");
 const {
 	initAnnotator,
 	openAnnotator,
@@ -26,6 +27,8 @@ let project={
 let _compactMode = false;
 let _sortable = null;
 let _captureHotkey = "Alt+C";
+let _sessionHotkey = "Ctrl+Shift+S";
+let _captureTarget = "sap";
 let _pendingAnnotateIndex = -1;
 let _inAnnotateFlow = false;
 let _currentProjectPath = "";
@@ -59,7 +62,8 @@ function syncUIToProject(){
 }
 
 function updateCaptureButtonTitle(){
- const label = `Capture screenshot (${displayHotkey(_captureHotkey)})`;
+ const modeLabel = _captureTarget === "non-sap" ? "Non-SAP" : "SAP GUI";
+ const label = `Capture (${displayHotkey(_captureHotkey)}) · ${modeLabel} · Session (${displayHotkey(_sessionHotkey)})`;
  ["captureBtn","captureBtnMain"].forEach((id)=>{
   const btn = document.getElementById(id);
   if(btn) btn.title = label;
@@ -70,8 +74,36 @@ function displayHotkey(accelerator){
  return (accelerator || "").replace(/CommandOrControl/g, "Ctrl");
 }
 
+function isStepStatusBarOnly(step){
+ if(step && step.snapshotMeta && step.snapshotMeta.statusBarOnly) return true;
+ return isSapSuccessStatusBar(step && step.sapContext ? step.sapContext.statusBar : "");
+}
+
+function formatStepChangesMeta(step){
+ if(isStepStatusBarOnly(step)) return "";
+ if(!step || !Array.isArray(step.changes) || !step.changes.length) return "";
+ if(descriptionListsChanges(step.description, step.changes)) return "";
+ return step.changes.map(formatChangePhrase).join(" · ");
+}
+
+function formatStepMetaLine(step){
+ if(isStepStatusBarOnly(step)) return "";
+ if(step && step.snapshotMeta && step.snapshotMeta.foregroundIsSap === false) return "";
+ const parts = [];
+ const changeMeta = formatStepChangesMeta(step);
+ const controlCount = step && step.snapshotMeta ? step.snapshotMeta.controlCount || 0 : 0;
+ if(changeMeta) parts.push(changeMeta);
+ const ctxMeta = formatSapContextMeta(step.sapContext);
+ if(ctxMeta) parts.push(ctxMeta);
+ if(controlCount) parts.push(`${controlCount} controls`);
+ if(controlCount && step.snapshotMeta && step.snapshotMeta.captureSource) parts.push(step.snapshotMeta.captureSource);
+ if(controlCount && step.sessionRecord) parts.push("session");
+ return parts.join(" | ");
+}
+
 function formatSapContextMeta(ctx){
  if(!ctx) return "";
+ if(!isSapForegroundContext(ctx)) return "";
  const parts = [];
  if(ctx.transaction) parts.push(ctx.transaction);
  if(ctx.systemName) parts.push(ctx.systemName);
@@ -139,7 +171,7 @@ function render(){
  if(!project.steps.length){
   const empty = document.createElement("div");
   empty.className = "empty-steps";
-  empty.textContent = "No steps yet — use Capture or your hotkey while working in SAP.";
+  empty.textContent = "No steps yet — use Capture (Alt+C) or Session (Ctrl+Shift+S) while working in SAP.";
   d.appendChild(empty);
   return;
  }
@@ -153,7 +185,7 @@ function render(){
     <div class="handle" title="Drag">≡</div>
     <div class="num">${i+1}</div>
     <div class="thumb-container"></div>
-    <div class="desc">${escapeHtml(s.description||"")}${formatSapContextMeta(s.sapContext) ? `<div class="step-meta">${escapeHtml(formatSapContextMeta(s.sapContext))}</div>` : ""}</div>
+    <div class="desc">${escapeHtml(s.description||"")}${formatStepMetaLine(s) ? `<div class="step-meta">${escapeHtml(formatStepMetaLine(s))}</div>` : ""}</div>
     <div class="step-actions">
       <button type="button" data-step-action="annotate" data-index="${i}" title="Annotate screenshot">🖊️</button>
       <button type="button" data-step-action="edit" data-index="${i}" title="Edit description">✏️</button>
@@ -279,26 +311,113 @@ async function finishAnnotateFlow(){
  }
 }
 
+function formatStepSavedStatus(step){
+ if(!step) return "Step saved.";
+ if(isStepStatusBarOnly(step)){
+  return step.description ? `Step saved: "${step.description}".` : "Step saved (status bar).";
+ }
+ const parts = [];
+ if(step.description) parts.push(`"${step.description}"`);
+ const changeCount = (step.changes && step.changes.length) || 0;
+ if(changeCount){
+  const fields = formatStepChangesMeta(step);
+  parts.push(`${changeCount} field(s): ${fields}`);
+ } else if(step.snapshotMeta && step.snapshotMeta.error){
+  const err = String(step.snapshotMeta.error);
+  if(err.includes("no fields found") || err.includes("No SAP fields detected")){
+   parts.push("no fields detected on screen");
+  } else if(err.includes("Scripting unavailable") || err.includes("GetScriptingEngine")){
+   parts.push("no fields — enable SAP GUI Scripting (Options → Accessibility & Scripting)");
+  } else {
+   parts.push("no fields — " + err);
+  }
+ } else if(step.sessionRecord && step.snapshotMeta && !step.snapshotMeta.controlCount && isSapForegroundContext(step.sapContext)){
+  parts.push("no fields detected on screen");
+ }
+ const source = step.sapContext ? step.sapContext.source : "";
+ if(source && source !== "unknown") parts.push(source);
+ return "Step saved" + (parts.length ? ": " + parts.join(" · ") : "") + ".";
+}
+
 function onAnnotatorSaved(stepIndex){
  render();
  const step = project.steps[stepIndex];
- const source = step && step.sapContext ? step.sapContext.source : "unknown";
- const desc = step ? step.description : "";
- setStatus(`Step saved${desc ? ': "' + desc + '"' : ""}${source !== "unknown" ? " ("+source+")" : ""}.`);
+ setStatus(formatStepSavedStatus(step));
+}
+
+function formatCaptureTimings(timings){
+ if(!timings || !timings.totalMs) return "";
+ const parts = [`${timings.totalMs}ms total`];
+ if(timings.snapshotMs != null) parts.push(`SAP ${timings.snapshotMs}ms`);
+ if(timings.vbsDiscoverMs != null) parts.push(`VBS discover ${timings.vbsDiscoverMs}ms`);
+ if(timings.contextMs != null) parts.push(`context ${timings.contextMs}ms`);
+ if(timings.screenshotMs != null) parts.push(`screenshot ${timings.screenshotMs}ms`);
+ if(timings.ocrMs != null && timings.ocrMs > 50) parts.push(`OCR ${timings.ocrMs}ms`);
+ return parts.join(" · ");
 }
 
 async function captureStep(){
  const inputDesc=document.getElementById("stepDesc").value.trim();
- setStatus("Capturing SAPGUI screenshot...");
+ setBusy(true);
+ setStatus("Capturing SAP GUI…");
  try{
   const res = await ipcRenderer.invoke("capture-sapgui");
   applyCaptureResult(res, inputDesc, true);
  }catch(err){
   setStatus("Capture failed: "+err.message, "error");
+ }finally{
+  setBusy(false);
+ }
+}
+
+function applySessionStepResult(payload, openAnnotatorAfter=true, inputDesc=""){
+ const step = payload && payload.step ? payload.step : null;
+ if(!step) return;
+ const autoDesc = step.description || "";
+ const changeMeta = formatStepChangesMeta(step);
+ if(inputDesc){
+  step.description = changeMeta ? `${inputDesc} (${changeMeta})` : inputDesc;
+ } else if(!autoDesc && changeMeta){
+  step.description = changeMeta;
+ }
+ syncProjectFromUI();
+ project.steps.push(step);
+ document.getElementById("stepDesc").value="";
+ const stepIndex = project.steps.length - 1;
+ render();
+
+ const changeCount = (step.changes && step.changes.length) || 0;
+ const controlCount = payload.snapshotControlCount || 0;
+ const detail = step.description ? `"${step.description}"` : "SAP step";
+ let changeNote = "";
+ if(isStepStatusBarOnly(step)){
+  changeNote = "";
+ } else if(changeCount){
+  changeNote = ` — ${changeCount} field(s) recorded`;
+ } else if(payload.snapshotError){
+  changeNote = ` — ${payload.snapshotError}`;
+ } else if(!controlCount){
+  changeNote = ` — no SAP fields detected`;
+ }
+ if(payload.snapshotDebugPath) changeNote += ` · Diagnostics: ${payload.snapshotDebugPath}`;
+ else if(payload.logPath) changeNote += ` · log: ${payload.logPath}`;
+
+ if(openAnnotatorAfter && step.image){
+  _pendingAnnotateIndex = stepIndex;
+  const timingNote = formatCaptureTimings(payload && payload.timings);
+  setStatus(`Step ${step.stepNumber || stepIndex + 1}: ${detail}${changeNote}${timingNote ? " · "+timingNote : ""}. Opening annotator...`);
+  startAnnotateFlow(step.image, stepIndex, ()=> onAnnotatorSaved(stepIndex));
+ } else {
+  const timingNote = formatCaptureTimings(payload && payload.timings);
+  setStatus(`Step ${step.stepNumber || stepIndex + 1}: ${detail}${changeNote}${timingNote ? " · "+timingNote : ""}.`);
  }
 }
 
 function applyCaptureResult(res, inputDesc="", openAnnotatorAfter=false){
+ if(res && res.step){
+  applySessionStepResult(res, openAnnotatorAfter, inputDesc);
+  return;
+ }
  const file = (res && res.file) ? res.file : res;
  const context = res && res.context ? res.context : null;
  const autoDesc = context ? formatStepDescription(context) : (res && res.title) || "";
@@ -317,10 +436,12 @@ function applyCaptureResult(res, inputDesc="", openAnnotatorAfter=false){
 
  if(openAnnotatorAfter && file){
   _pendingAnnotateIndex = stepIndex;
-  setStatus(`Step captured (${source}): ${detail}${contextDetail}. Opening full-screen annotator...`);
+  const timingNote = formatCaptureTimings(res && res.timings);
+  setStatus(`Step captured (${source}): ${detail}${contextDetail}${timingNote ? " · "+timingNote : ""}. Opening full-screen annotator...`);
   startAnnotateFlow(file, stepIndex, ()=> onAnnotatorSaved(stepIndex));
  } else {
-  setStatus(`Step captured (${source}): ${detail}${contextDetail}.`);
+  const timingNote = formatCaptureTimings(res && res.timings);
+  setStatus(`Step captured (${source}): ${detail}${contextDetail}${timingNote ? " · "+timingNote : ""}.`);
  }
 }
 
@@ -351,6 +472,7 @@ function applyNewProject(){
  document.getElementById("version").value = "1.0";
  document.getElementById("reviewDate").value = todayDateIso();
  if(keepAuthor) document.getElementById("author").value = keepAuthor;
+ try{ ipcRenderer.invoke("reset-session-recorder"); }catch(e){}
  setStatus("New SOP started.", "success");
  renderDeferred();
 }
@@ -371,6 +493,10 @@ async function saveProject(){
  }
 }
 
+async function resetSessionBaseline(){
+ try{ await ipcRenderer.invoke("reset-session-recorder"); }catch(e){}
+}
+
 async function loadProject(){
  try{
   const result = await ipcRenderer.invoke("load-project-dialog");
@@ -381,6 +507,7 @@ async function loadProject(){
   if(!project.reviewDate) project.reviewDate = todayDateIso();
   if(!project.steps) project.steps = [];
   _currentProjectPath = result.filePath;
+  await resetSessionBaseline();
   syncUIToProject();
   renderDeferred();
   setStatus(`Loaded: ${result.fileName}`, "success");
@@ -463,6 +590,32 @@ function normalizeKeyPart(key){
  return key;
 }
 
+function readCaptureTargetFromUI(){
+ const el = document.querySelector('input[name="captureTarget"]:checked');
+ return el && el.value === "non-sap" ? "non-sap" : "sap";
+}
+
+function applyCaptureTargetToUI(target){
+ _captureTarget = target === "non-sap" ? "non-sap" : "sap";
+ const sapRadio = document.getElementById("captureTargetSap");
+ const nonSapRadio = document.getElementById("captureTargetNonSap");
+ if(sapRadio) sapRadio.checked = _captureTarget === "sap";
+ if(nonSapRadio) nonSapRadio.checked = _captureTarget === "non-sap";
+ updateCaptureButtonTitle();
+}
+
+async function persistCaptureTarget(){
+ const captureTarget = readCaptureTargetFromUI();
+ if(captureTarget === _captureTarget) return;
+ _captureTarget = captureTarget;
+ try{
+  await ipcRenderer.invoke("save-settings", { captureTarget });
+  updateCaptureButtonTitle();
+ }catch(err){
+  setStatus("Could not save capture mode: "+err.message, "error");
+ }
+}
+
 function setupHotkeyRecorder(){
  const input = document.getElementById("hotkeyInput");
  if(!input) return;
@@ -491,10 +644,31 @@ async function openSettings(){
   _captureHotkey = settings.captureHotkey || "Alt+C";
   const input = document.getElementById("hotkeyInput");
   if(input) input.value = _captureHotkey;
+  const maxFieldsInput = document.getElementById("maxFieldsInput");
+  if(maxFieldsInput){
+   const maxFields = Number(settings.maxCaptureFields);
+   maxFieldsInput.value = Number.isFinite(maxFields) && maxFields >= 1 ? maxFields : 10;
+  }
   document.getElementById("hotkeyStatus").textContent = "Current: " + displayHotkey(_captureHotkey);
+  const paths = await ipcRenderer.invoke("get-data-paths");
+  const pathEl = document.getElementById("dataFolderPath");
+  if(pathEl && paths){
+   const snap = paths.snapshotDebugPath || path.join(paths.dataDir || "", "snapshot-last.json");
+   pathEl.textContent = snap;
+   pathEl.title = snap;
+  }
   document.getElementById("settingsModal").classList.add("open");
  }catch(err){
   setStatus("Could not load settings: "+err.message, "error");
+ }
+}
+
+async function openDataFolder(){
+ try{
+  const result = await ipcRenderer.invoke("open-data-folder");
+  if(result && result.path) setStatus("Opened: "+result.path);
+ }catch(err){
+  setStatus("Could not open data folder: "+err.message, "error");
  }
 }
 
@@ -505,8 +679,12 @@ function closeSettings(){
 async function saveSettingsUi(){
  const input = document.getElementById("hotkeyInput");
  const hotkey = (input && input.value.trim()) || "Alt+C";
+ const maxFieldsInput = document.getElementById("maxFieldsInput");
+ let maxCaptureFields = maxFieldsInput ? parseInt(maxFieldsInput.value, 10) : 10;
+ if(!Number.isFinite(maxCaptureFields) || maxCaptureFields < 1) maxCaptureFields = 1;
+ if(maxCaptureFields > 50) maxCaptureFields = 50;
  try{
-  const result = await ipcRenderer.invoke("save-settings", { captureHotkey: hotkey });
+  const result = await ipcRenderer.invoke("save-settings", { captureHotkey: hotkey, maxCaptureFields });
   if(result.hotkey && !result.hotkey.ok){
    document.getElementById("hotkeyStatus").textContent = result.hotkey.error;
    document.getElementById("hotkeyStatus").style.color = "#a00";
@@ -515,7 +693,7 @@ async function saveSettingsUi(){
   _captureHotkey = result.settings.captureHotkey;
   updateCaptureButtonTitle();
   closeSettings();
-  setStatus("Settings saved. Capture hotkey: " + displayHotkey(_captureHotkey));
+  setStatus("Settings saved. Capture hotkey: " + displayHotkey(_captureHotkey) + ` · max fields: ${maxCaptureFields}`);
  }catch(err){
   setStatus("Failed to save settings: "+err.message, "error");
  }
@@ -525,6 +703,8 @@ async function loadInitialSettings(){
  try{
   const settings = await ipcRenderer.invoke("get-settings");
   _captureHotkey = settings.captureHotkey || "Alt+C";
+  _sessionHotkey = settings.sessionHotkey || "Ctrl+Shift+S";
+  applyCaptureTargetToUI(settings.captureTarget);
   updateCaptureButtonTitle();
  }catch(e){}
 }
@@ -588,6 +768,7 @@ function setupOtherEventListeners(){
   if(!btn) return;
   if(btn.dataset.action === "settings-cancel") closeSettings();
   if(btn.dataset.action === "settings-save") saveSettingsUi();
+  if(btn.dataset.action === "open-data-folder") openDataFolder();
  });
 
  document.getElementById("confirmModal")?.addEventListener("click", (e)=>{
@@ -601,6 +782,10 @@ function setupOtherEventListeners(){
  document.querySelector(".hotkey-presets")?.addEventListener("click", (e)=>{
   const btn = e.target.closest("[data-hotkey]");
   if(btn) applyHotkeyPreset(btn.dataset.hotkey);
+ });
+
+ document.querySelector(".capture-target-options")?.addEventListener("change", (e)=>{
+  if(e.target && e.target.name === "captureTarget") persistCaptureTarget();
  });
 
  document.getElementById("annotatorModal")?.addEventListener("click", (e)=>{
@@ -617,6 +802,8 @@ function setupOtherEventListeners(){
  if(ipcRenderer){
   ipcRenderer.on("capture-complete", (_event, res)=> applyCaptureResult(res, "", true));
   ipcRenderer.on("capture-error", (_event, message)=> setStatus("Capture failed: "+message, "error"));
+  ipcRenderer.on("session-step-complete", (_event, payload)=> applyCaptureResult(payload, "", true));
+  ipcRenderer.on("session-step-error", (_event, message)=> setStatus("Capture failed: "+message, "error"));
  }
 }
 

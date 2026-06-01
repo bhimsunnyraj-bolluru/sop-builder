@@ -13,9 +13,53 @@ const fsExporter = require("fs");
 const path = require("path");
 const sizeOf = require("image-size");
 const { getExportsDir, ensureDir } = require("../paths");
+const { formatChangePhrase, descriptionListsChanges } = require("./modules/recording/sessionRecorder");
 
 function sanitizeFileName(name) {
 	return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120);
+}
+
+/** Split "Set A: x; Set B: y" into Word lines (semicolon on all but last). Returns null if not splittable. */
+function splitDescriptionLinesForWord(description) {
+	const text = String(description || "").trim();
+	if (!text.includes(";")) return null;
+	const parts = text
+		.split(";")
+		.map((p) => p.trim())
+		.filter(Boolean);
+	if (parts.length <= 1) return null;
+	return parts.map((p, i) => (i < parts.length - 1 ? `${p};` : p));
+}
+
+function stepDescriptionParagraphs(description) {
+	const lines = splitDescriptionLinesForWord(description);
+	if (!lines) {
+		return [
+			new Paragraph({
+				children: [new TextRun({ text: description || " " })],
+				numbering: { reference: "stepNumbering", level: 0 },
+				spacing: { after: 80 },
+			}),
+		];
+	}
+
+	const paragraphs = [
+		new Paragraph({
+			children: [new TextRun({ text: "" })],
+			numbering: { reference: "stepNumbering", level: 0 },
+			spacing: { after: 40 },
+		}),
+	];
+	for (let i = 0; i < lines.length; i++) {
+		paragraphs.push(
+			new Paragraph({
+				children: [new TextRun({ text: lines[i] })],
+				indent: { left: 720 },
+				spacing: { after: i === lines.length - 1 ? 80 : 40 },
+			})
+		);
+	}
+	return paragraphs;
 }
 
 function formatDisplayDate(value) {
@@ -111,14 +155,25 @@ async function exportWord(project) {
 	}
 
 	for (const s of project.steps || []) {
-		children.push(
-			new Paragraph({
-				children: [new TextRun({ text: s.description || " " })],
-				numbering: { reference: "stepNumbering", level: 0 },
-				spacing: { after: 120 },
-			})
-		);
-		const imgPara = imageParagraph(s.image);
+		children.push(...stepDescriptionParagraphs(s.description));
+
+		if (
+			Array.isArray(s.changes) &&
+			s.changes.length &&
+			!descriptionListsChanges(s.description, s.changes)
+		) {
+			for (const c of s.changes) {
+				children.push(
+					new Paragraph({
+						children: [new TextRun({ text: formatChangePhrase(c) })],
+						indent: { left: 720 },
+						spacing: { after: 60 },
+					})
+				);
+			}
+		}
+
+		const imgPara = imageParagraph(s.image || s.screenshot);
 		if (imgPara) children.push(imgPara);
 	}
 

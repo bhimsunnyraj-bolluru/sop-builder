@@ -2,14 +2,18 @@ const {app,BrowserWindow,ipcMain,globalShortcut,dialog} = require("electron");
 const path=require("path");
 const fs=require("fs");
 const {takeScreenshot}=require("./src/screenshot");
-const {getSapGuiContext,formatStepDescription,describeCaptureContext}=require("./src/sapgui-context");
-const {readStatusBarFromScreenshot}=require("./src/statusbar-ocr");
-const {loadSettings,saveSettings}=require("./src/config");
-const {getProjectRoot,getScreenshotsDir,getSopsDir,ensureDir}=require("./paths");
+const {mergeContextFromSnapshotAndPs,getSapGuiContext,isSapForegroundContext,isSapSuccessStatusBar,formatStepDescription,describeCaptureContext}=require("./src/sapgui-context");
+const {loadSettings,saveSettings,DEFAULT_SETTINGS,normalizeCaptureTarget}=require("./src/config");
+const {getProjectRoot,getScreenshotsDir,getSopsDir,getDataDir,ensureDir}=require("./paths");
+const {captureSnapshot,emptySnapshot}=require("./src/modules/sap/snapshotEngine");
+const {recordStep,resetSessionRecorder}=require("./src/modules/recording/sessionRecorder");
+const {appendCaptureLog,getLogPath,getSnapshotDebugPath}=require("./src/captureLog");
+const {focusSapWindow}=require("./src/focus-sap");
 
 let mainWindow;
 let _normalBounds = null;
 let _registeredHotkey = null;
+let _registeredSessionHotkey = null;
 let _isCompact = false;
 let _wasCompactBeforeAnnotate = false;
 
@@ -26,32 +30,145 @@ function createWindow(){
  mainWindow.once("ready-to-show", ()=>{ mainWindow.show(); });
 }
 
-async function runCapture(){
+async function runFullCapture(){
  if(!mainWindow) throw new Error("Main window not available");
+ const t0 = Date.now();
+ let phase = t0;
+ const timings = {};
  const screenshotsDir=ensureDir(getScreenshotsDir());
+ const settings = loadSettings(getProjectRoot());
+ const maxFields = settings.maxCaptureFields ?? DEFAULT_SETTINGS.maxCaptureFields;
+ const captureTarget = normalizeCaptureTarget(settings.captureTarget);
+
+ const { wasVisible, wasFocused } = await prepareCaptureWindow();
+ timings.prepareMs = Date.now() - phase; phase = Date.now();
+
+ const captureSap = captureTarget === "sap";
+ if (captureSap) {
+  await focusSapWindow();
+  await new Promise((r) => setTimeout(r, 150));
+ }
+
+ const psContext = await getSapGuiContext({ captureTarget });
+ timings.contextMs = Date.now() - phase; phase = Date.now();
+
+ let snapshot = emptySnapshot();
+ if (captureSap) {
+  snapshot = await captureSnapshot({ maxFields });
+ } else {
+  snapshot = { ...emptySnapshot(), captureSource: "win32-foreground" };
+ }
+ timings.snapshotMs = Date.now() - phase; phase = Date.now();
+
+ if(snapshot.debug && snapshot.debug.discoverMs != null){
+  timings.vbsDiscoverMs = snapshot.debug.discoverMs;
+ }
+
+ const context = mergeContextFromSnapshotAndPs(snapshot, psContext, captureTarget);
+ const statusBarOnly = isSapSuccessStatusBar(context.statusBar);
+ if (statusBarOnly) {
+  snapshot = { ...snapshot, controls: [] };
+ }
+ const cropRect = captureSap
+  ? (context.sapWindowRect || snapshot.sapWindowRect || null)
+  : null;
+
+ const file=path.join(screenshotsDir, `${Date.now()}.png`);
+ await takeScreenshot(file, cropRect);
+ timings.screenshotMs = Date.now() - phase; phase = Date.now();
+ const cropped = !!cropRect;
+
+ timings.ocrMs = 0;
+
+ await restoreCaptureWindow(wasVisible, wasFocused);
+ timings.restoreMs = Date.now() - phase; phase = Date.now();
+
+ const step = recordStep({ screenshot: file, snapshot, context });
+ timings.recordMs = Date.now() - phase;
+ timings.totalMs = Date.now() - t0;
+ const controlCount = statusBarOnly ? 0 : (Array.isArray(snapshot.controls) ? snapshot.controls.length : 0);
+ const changeCount = Array.isArray(step.changes) ? step.changes.length : 0;
+
+ setImmediate(() => {
+  appendCaptureLog({
+   event: "capture-complete",
+   contextSource: context.source || "none",
+   captureSource: snapshot.captureSource || "",
+   controlCount,
+   changeCount,
+   cropped,
+   maxCaptureFields: maxFields,
+   captureTarget,
+   statusBar: context.statusBar || undefined,
+   statusBarOnly,
+   snapshotError: snapshot.error || undefined,
+   debug: snapshot.debug || undefined,
+   timings,
+  });
+ });
+
+ return {
+  file,
+  title: step.description,
+  context,
+  contextDetail: describeCaptureContext(context),
+  step,
+  snapshotControlCount: controlCount,
+  snapshotError: snapshot.error || null,
+  logPath: getLogPath(),
+  snapshotDebugPath: getSnapshotDebugPath(),
+  dataDir: getDataDir(),
+  timings,
+ };
+}
+
+async function runCapture(){
+ return runFullCapture();
+}
+
+async function runSessionCapture(){
+ return runFullCapture();
+}
+
+async function prepareCaptureWindow(){
+ if(!mainWindow) throw new Error("Main window not available");
  const wasVisible = mainWindow.isVisible();
  const wasFocused = mainWindow.isFocused();
- if(wasVisible && wasFocused){
-  try{ mainWindow.hide(); }catch(e){}
-  await new Promise((resolve) => setTimeout(resolve, 500));
- }
- const context = await getSapGuiContext();
- const file=path.join(screenshotsDir, `${Date.now()}.png`);
- await takeScreenshot(file);
-
- if(!context.statusBar){
-  const ocrText = await readStatusBarFromScreenshot(file, context.sapWindowRect);
-  if(ocrText){
-   context.statusBar = ocrText;
-   context.source = context.source && context.source !== "none" ? `${context.source}+ocr` : "ocr";
-  }
- }
-
  if(wasVisible){
-  try{ mainWindow.show(); if(!wasFocused) mainWindow.blur(); else mainWindow.focus(); }catch(e){}
+  try{ mainWindow.hide(); }catch(e){}
  }
- const title = formatStepDescription(context);
- return { file, title, context, contextDetail: describeCaptureContext(context) };
+ await new Promise((r) => setTimeout(r, 200));
+ return { wasVisible, wasFocused };
+}
+
+async function restoreCaptureWindow(wasVisible, wasFocused){
+ if(!mainWindow || !wasVisible) return;
+ try{ mainWindow.show(); if(!wasFocused) mainWindow.blur(); else mainWindow.focus(); }catch(e){}
+}
+
+function registerSessionHotkey(accelerator){
+ if(_registeredSessionHotkey){
+  try{ globalShortcut.unregister(_registeredSessionHotkey); }catch(e){}
+  _registeredSessionHotkey = null;
+ }
+ if(!accelerator) return { ok:false, error:"No session hotkey specified" };
+ if(!globalShortcut.isRegistered(accelerator)){
+  const ok = globalShortcut.register(accelerator, async ()=>{
+   if(!mainWindow) return;
+   try{
+    const result = await runSessionCapture();
+    mainWindow.webContents.send("session-step-complete", result);
+   }catch(err){
+    mainWindow.webContents.send("session-step-error", err.message || String(err));
+   }
+  });
+  if(ok){
+   _registeredSessionHotkey = accelerator;
+   return { ok:true, hotkey: accelerator };
+  }
+  return { ok:false, error:`Could not register session hotkey "${accelerator}".` };
+ }
+ return { ok:false, error:`"${accelerator}" is already registered.` };
 }
 
 function registerCaptureHotkey(accelerator){
@@ -156,11 +273,14 @@ function exitAnnotateMode(){
 }
 
 ipcMain.handle("capture-sapgui", async () => runCapture());
+ipcMain.handle("capture-session-step", async () => runSessionCapture());
+ipcMain.handle("reset-session-recorder", async () => { resetSessionRecorder(); return true; });
 ipcMain.handle("get-settings", async () => loadSettings(getProjectRoot()));
 ipcMain.handle("save-settings", async (_event, settings) => {
  const merged = saveSettings(getProjectRoot(), settings || {});
  const reg = registerCaptureHotkey(merged.captureHotkey);
- return { settings: merged, hotkey: reg };
+ const sessionReg = registerSessionHotkey(merged.sessionHotkey || "CommandOrControl+Shift+S");
+ return { settings: merged, hotkey: reg, sessionHotkey: sessionReg };
 });
 ipcMain.handle("set-compact-mode", async (_event, enable) => applyCompactMode(enable));
 ipcMain.handle("enter-annotate-mode", async () => { enterAnnotateMode(); return true; });
@@ -233,10 +353,26 @@ ipcMain.handle("load-last-project", async () => {
  return { ok: true, filePath, fileName: path.basename(filePath), project };
 });
 
+ipcMain.handle("get-data-paths", async () => ({
+ dataDir: getDataDir(),
+ projectRoot: getProjectRoot(),
+ snapshotDebugPath: getSnapshotDebugPath(),
+ logPath: getLogPath(),
+}));
+
+ipcMain.handle("open-data-folder", async () => {
+ const { shell } = require("electron");
+ ensureDir(getDataDir());
+ await shell.openPath(getDataDir());
+ return { ok: true, path: getDataDir() };
+});
+
 app.whenReady().then(()=>{
+ ensureDir(getDataDir());
  createWindow();
  const settings = loadSettings(getProjectRoot());
  registerCaptureHotkey(settings.captureHotkey);
+ registerSessionHotkey(settings.sessionHotkey || "CommandOrControl+Shift+S");
 });
 app.on("will-quit", ()=>{ globalShortcut.unregisterAll(); });
 app.on("window-all-closed", () => {

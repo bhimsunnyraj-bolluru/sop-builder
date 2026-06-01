@@ -3,8 +3,16 @@ const path = require("path");
 
 const DEFAULT_SETTINGS = {
 	captureHotkey: "Alt+C",
+	sessionHotkey: "CommandOrControl+Shift+S",
 	lastProjectPath: "",
+	maxCaptureFields: 10,
+	/** "sap" = focus SAP GUI and capture fields; "non-sap" = active window only (any app) */
+	captureTarget: "sap",
 };
+
+function normalizeCaptureTarget(value) {
+	return value === "non-sap" ? "non-sap" : "sap";
+}
 
 function getSettingsPath(baseDir) {
 	return path.join(baseDir, "data", "settings.json");
@@ -30,4 +38,4 @@ function saveSettings(baseDir, settings) {
 	return merged;
 }
 
-module.exports = { DEFAULT_SETTINGS, loadSettings, saveSettings };
+module.exports = { DEFAULT_SETTINGS, normalizeCaptureTarget, loadSettings, saveSettings };

@@ -1,8 +1,8 @@
 # SOP Builder
 
-**SOP Builder** is a Windows desktop app for capturing SAP GUI screens, building step-by-step Standard Operating Procedures (SOPs), annotating screenshots, and exporting polished Word documents. Built with Electron for the **Business Core Solutions** team.
+**SOP Builder** is a Windows desktop app for capturing SAP GUI screens (or any other application), building step-by-step Standard Operating Procedures (SOPs), annotating screenshots, and exporting polished Word documents. Built with Electron for the **Business Core Solutions** team.
 
-Think of it as a lightweight Scribe-style tool focused on SAP process documentation.
+Think of it as a lightweight Scribe-style tool focused on SAP process documentation—with optional capture for browsers, Office, Calculator, and other Windows apps.
 
 ---
 
@@ -10,14 +10,17 @@ Think of it as a lightweight Scribe-style tool focused on SAP process documentat
 
 | Feature | Description |
 |---------|-------------|
-| **Screenshot capture** | Capture the active SAP GUI window while you work |
-| **SAP context detection** | Auto-fills step titles from SAP window name, status bar (UI Automation/OCR), and transaction code when SAP Scripting is enabled |
-| **Global hotkey** | Configurable shortcut (default `Alt+C`) to capture without clicking the app |
-| **Compact mode** | Shrinks to a floating toolbar so SAP stays in focus |
+| **SAP GUI capture** | Focus SAP, crop to the SAP window, read fields via VBScript (SAP GUI Scripting), human-readable labels from tooltips |
+| **Non-SAP capture** | Document any active window—Chrome, Edge, Calculator, Notepad, etc.—full desktop screenshot and window title only |
+| **Capture mode** | Choose **SAP GUI** or **Non-SAP** in SOP Details (one row with Author, Version, Date) |
+| **Status bar steps** | After Save/Post, SAP success messages become the step description (no field list) |
+| **Session recorder** | `Ctrl+Shift+S` captures screenshot + SAP field deltas with **Set**-style descriptions |
+| **Global hotkeys** | `Alt+C` capture; `Ctrl+Shift+S` session step (configurable in Settings) |
+| **Compact mode** | Shrinks to a floating toolbar so the target app stays in focus |
 | **Annotation tools** | Box, arrow, highlight, numbered callouts, and text labels |
 | **Step management** | Drag to reorder, edit descriptions, delete steps |
 | **Save / Open** | Projects saved as JSON (`.json`) under `data/sops/` |
-| **DOCX export** | Exports a Word document with metadata and annotated screenshots |
+| **DOCX export** | Word document with metadata; multi-field steps break onto separate lines |
 | **SOP metadata** | Author, version, review date (defaults to today), and title |
 
 ---
@@ -80,8 +83,8 @@ Use this if you are changing the code or running from source.
 
 - **Windows 10 or 11**
 - **Node.js 18 LTS or newer** — [Download Node.js](https://nodejs.org/)
-- **SAP GUI for Windows** (for capturing SAP screens)
-- **Optional:** SAP GUI Scripting enabled for richer step titles
+- **SAP GUI for Windows** (for SAP capture mode)
+- **Optional:** SAP GUI Scripting enabled for field capture and richer titles
 
 ### 1. Install Node.js
 
@@ -94,8 +97,6 @@ node --version
 npm --version
 ```
 
-Both commands should print version numbers (e.g. `v20.x.x` and `10.x.x`).
-
 ### 2. Clone the repository
 
 ```powershell
@@ -103,27 +104,19 @@ git clone https://github.com/bhimsunnyraj-bolluru/sop-builder.git
 cd sop-builder
 ```
 
-If your organization uses a different GitHub org or repo URL, use that URL instead.
-
 ### 3. Install dependencies
-
-From the project folder:
 
 ```powershell
 npm install
 ```
 
-This downloads Electron and other packages into `node_modules/`. It may take a few minutes the first time.
-
 ### 4. First-run setup (optional)
-
-Copy the example settings file if you want a local config (the app creates defaults automatically on first run):
 
 ```powershell
 copy data\settings.example.json data\settings.json
 ```
 
-Open **Settings** (⚙️) in the app to change the capture hotkey if `Alt+C` conflicts with another tool.
+Open **Settings** (⚙️) for hotkeys and max SAP fields per capture.
 
 ### 5. Run from source
 
@@ -131,119 +124,142 @@ Open **Settings** (⚙️) in the app to change the capture hotkey if `Alt+C` co
 npm start
 ```
 
-The SOP Builder window opens. Keep it running while you document SAP transactions.
-
-To build a distributable `.exe` for teammates, see [Install from EXE](#install-from-exe-recommended).
-
 ---
 
 ## Quick Start Workflow
 
-1. Fill in **Author**, **Version**, **Review Date**, and **SOP Title** (e.g. `VA01 – Create Sales Order`).
-2. Click **🔳 Compact** to minimize the app to a small toolbar (top-right of the screen).
-3. Work in SAP GUI as usual.
-4. Press **`Alt+C`** (or click **📷 Capture**) to capture a step.
-5. Annotate the screenshot in the full-screen editor, then click **Done** (or **Skip**).
-6. Repeat for each step in the process.
-7. **💾 Save** your project as JSON so you can resume later.
-8. **📘 Export** when ready to generate the Word document in the `exports/` folder.
+1. Fill in **Author**, **Version**, **Review Date**, and **SOP Title**.
+2. Under the same row, choose **SAP GUI** or **Non-SAP** (saved automatically).
+3. Click **🔳 Compact** to minimize the app to a small toolbar.
+4. **SAP GUI:** work in SAP; the app brings SAP to the front when you capture from SOP Builder.  
+   **Non-SAP:** click the app you want (e.g. Chrome), then capture—SAP is not focused or read.
+5. Press **`Alt+C`** or **`Ctrl+Shift+S`** (session steps with SAP field deltas in SAP GUI mode only).
+6. Annotate the screenshot, then click **Done** (or **Skip**).
+7. **💾 Save** the project JSON; **📘 Export** for Word in `exports/`.
+
+---
+
+## Capture modes (SAP GUI vs Non-SAP)
+
+| Mode | Select in SOP Details | Behavior |
+|------|------------------------|----------|
+| **SAP GUI** | SAP GUI | Brings SAP to the front; crops screenshot to SAP window; captures up to N fields (Settings); status bar success text only on save steps |
+| **Non-SAP** | Non-SAP | Uses whichever window is active after SOP hides; **full desktop** screenshot; step title = window title; **no** SAP fields or scripting |
+
+Switch modes when your SOP mixes SAP and other apps (e.g. Fiori in Chrome vs VA01 in SAP GUI).
+
+**Tips**
+
+- **Non-SAP:** focus Chrome/Edge/Calculator **before** `Alt+C`—do not click Capture in SOP while that app is in the background unless it is the window behind SOP.
+- **SAP GUI:** capture right after **Save** while the green status message is visible for a clean status-bar step.
+- Field steps use descriptions like `Set Sales Organization: P100` (semicolon-separated in the UI; separate lines in Word export).
 
 ---
 
 ## Project Structure
 
 ```
-sop-builder/
-├── main.js                 # Electron main process (window, capture, hotkeys)
+SapSOPBuilder_Full/
+├── main.js                 # Electron main process (capture, hotkeys, IPC)
 ├── paths.js                # App folders (dev vs packaged .exe)
 ├── package.json
 ├── src/
 │   ├── index.html          # UI layout
-│   ├── App.js              # App logic, steps, save/load
+│   ├── App.js              # Steps, save/load, capture UI
 │   ├── annotator.js        # Canvas annotation tools
 │   ├── exporter.js         # DOCX export
-│   ├── sapgui-context.js   # SAP window / scripting context
-│   ├── screenshot.js       # Screen capture
+│   ├── sapgui-context.js   # SAP / foreground window context
+│   ├── screenshot.js       # Screen capture + optional crop
 │   ├── config.js           # User settings
-│   └── theme.css           # UI styling
+│   ├── captureLog.js       # Capture diagnostics log
+│   ├── focus-sap.js        # Bring SAP window to front
+│   ├── sap-powershell.js   # PowerShell executable helper
+│   └── modules/
+│       ├── sap/
+│       │   ├── snapshotEngine.js   # VBScript SAP snapshot
+│       │   ├── deltaEngine.js      # Compare snapshots
+│       │   └── labelResolver.js    # Field labels from capture
+│       └── recording/
+│           └── sessionRecorder.js  # Session step pipeline
 ├── scripts/
-│   └── get-sapgui-context.ps1   # PowerShell helper for SAP context
+│   ├── get-sapgui-context.ps1      # Window context (-CaptureMode Sap | NonSap)
+│   ├── capture-sap-snapshot.vbs    # Primary SAP field capture (VBScript)
+│   ├── capture-sap-snapshot.ps1    # PowerShell fallback
+│   ├── focus-sap-window.ps1
+│   └── crop-screenshot.ps1
 ├── data/
-│   ├── settings.json       # Local settings (not in git — use settings.example.json)
-│   └── sops/               # Saved SOP projects (.json)
-├── screenshots/            # Captured PNGs (per project)
-└── exports/                # Generated .docx files
+│   ├── settings.json       # Local (gitignored; see settings.example.json)
+│   ├── snapshot-last.json  # Last capture debug (gitignored)
+│   ├── capture.log         # Capture log (gitignored)
+│   └── sops/               # Saved SOP projects
+├── screenshots/
+└── exports/
 ```
 
 ---
 
-## SAP context detection
+## SOP Session Recorder (`Ctrl+Shift+S`)
 
-When you capture a step, SOP Builder reads SAP metadata and fills the step description automatically.
+Available in **SAP GUI** mode only.
 
-| Source | What you get | When |
-|--------|----------------|------|
-| **Win32** | SAP window title (e.g. `Create Standard Order: Overview`) | Always |
-| **UI Automation** | Status bar (e.g. `Standard Order 6676 has been saved.`) | Usually — no SAP Scripting required |
-| **Screenshot OCR** | Status bar text from the captured image | Fallback if UI Automation misses it |
-| **SAP Scripting** | Window title + **t-code** (e.g. `VA01`) + **system** + status bar | SAP GUI + server scripting enabled |
+| Hotkey | Mode | What it does |
+|--------|------|----------------|
+| **`Alt+C`** | Capture | Screenshot + title (SAP fields or window title) |
+| **`Ctrl+Shift+S`** | Session | Same + compare to previous SAP snapshot for field changes |
 
-Example step title with scripting enabled:
+Session steps use **Set** phrasing, e.g. `Set Sales Document Type: OR; Set Sales Organization: P100`.
 
-`Create Sales Documents (VA01) [TS4] — Standard Order 4500012345 has been saved`
+The **first** session step is a baseline. **New SOP** or opening a saved project resets the baseline. Switching from SAP GUI to Non-SAP clears the SAP field baseline.
 
-The text after `—` comes from the **SAP GUI status bar** (bottom of the screen), including messages like a newly created sales order number after you click **Save** in VA01.
+---
 
-**Workflow for VA01 save step:** click **Save** in SAP → wait for the status bar message → press **`Alt+C`** (or **Capture**) while SAP is still showing that message.
+## SAP context detection (SAP GUI mode)
 
-After capture, the status bar shows what was detected (e.g. `UI Automation: window title, status bar` or `SAP Scripting: window title, t-code VA01, status bar`). Each step shows a meta line under the description (e.g. `status · status detected` or `VA01 · scripting`).
+| Source | What you get |
+|--------|----------------|
+| **VBScript snapshot** | Field values, labels (DefaultTooltip), transaction, screen |
+| **PowerShell / Win32** | SAP window title, rect for crop, status bar (UI Automation) |
+| **Success status bar** | Step description = status message only (e.g. `Standard Order 6677 has been saved.`) |
 
 ### Enable SAP GUI Scripting
 
-**On your PC (SAP Logon / SAP GUI):**
+**On your PC:** SAP GUI → **Options → Accessibility & Scripting → Scripting** → enable scripting.
 
-1. Open **Options → Accessibility & Scripting → Scripting**
-2. Check **Enable scripting**
-3. Set security to allow scripting (confirm prompts when SOP Builder captures)
-
-**On the SAP system (often required — ask your SAP Basis team):**
-
-- Parameter `sapgui/user_scripting` must be `TRUE` on the application server
-- Your user may need scripting allowed in transaction **RZ11** / user profile settings
-
-Without server-side scripting, you still get the **window title only** (`source: win32` in saved projects).
-
-### Tips
-
-- Click the SAP screen you want **before** pressing `Alt+C` or **Capture**
-- Use **Compact** mode so SOP Builder hides before the screenshot
-- Type your own text in **Step description** before capture to override auto-detection
+**On the server:** `sapgui/user_scripting` and user authorizations (ask Basis). VBScript capture needs a working scripting engine; if PowerShell `GetScriptingEngine` fails on your PC, VBScript may still work via `cscript`.
 
 ---
 
 ## Configuration
 
-| Setting | Default | Location |
-|---------|---------|----------|
-| Capture hotkey | `Alt+C` | Settings modal or `data/settings.json` |
-| Last opened project | — | Stored in `data/settings.json` |
+| Setting | Default | Where |
+|---------|---------|--------|
+| Capture target | SAP GUI | **SOP Details** row (SAP GUI / Non-SAP radios) |
+| Capture hotkey | `Alt+C` | Settings (⚙️) |
+| Session hotkey | `Ctrl+Shift+S` | Settings |
+| Max SAP fields per capture | `10` | Settings (1–50) |
+| Last opened project | — | `data/settings.json` |
 
 Example `data/settings.json`:
 
 ```json
 {
   "captureHotkey": "Alt+C",
+  "sessionHotkey": "CommandOrControl+Shift+S",
+  "captureTarget": "sap",
+  "maxCaptureFields": 10,
   "lastProjectPath": ""
 }
 ```
+
+Diagnostics after each capture: **Settings → Open data folder** → `capture.log`, `snapshot-last.json`.
 
 ---
 
 ## Saving and Sharing SOPs
 
-- **Project file:** Save as `.json` via **💾 Save**. Share this file with teammates; they can **📂 Open** it in their copy of SOP Builder.
-- **Screenshots:** Stored locally in `screenshots/` with paths referenced in the JSON. When sharing projects, zip the JSON **and** the referenced screenshot files, or save/export from the same machine.
-- **Word export:** **📘 Export** writes to `exports/<SOP Title>.docx` — suitable for review and distribution.
+- **Project file:** **💾 Save** as `.json`; share with teammates via **📂 Open**.
+- **Screenshots:** Local `screenshots/` paths in JSON—zip JSON + images when moving machines.
+- **Word export:** **📘 Export** → `exports/<SOP Title>.docx`.
 
 ---
 
@@ -251,13 +267,14 @@ Example `data/settings.json`:
 
 | Issue | What to try |
 |-------|-------------|
-| App won't start | Run `npm install` again; ensure Node.js 18+ is installed |
-| Capture shows wrong window | Focus SAP GUI before capturing; use compact mode |
-| Hotkey doesn't work | Change hotkey in Settings; avoid conflicts with SAP/other tools |
-| Empty step title | Focus SAP before capture; enable SAP GUI Scripting for t-code/status bar; or type Step description first |
-| Only window title, no status bar | Capture right after Save while the green status message is visible; restart app for latest detection |
-| Only window title, no t-code | SAP Scripting not enabled on client or server — see [SAP context detection](#sap-context-detection) |
-| Export fails | Ensure each step has a valid screenshot path on disk |
+| App won't start | `npm install`; Node.js 18+; check terminal for errors |
+| Wrong title (Chrome vs SAP) | Set **SAP GUI** or **Non-SAP** in SOP Details; for Non-SAP, focus the target app before capture |
+| SAP shows Chrome title | Switch to **SAP GUI**; capture from SOP or focus SAP before `Alt+C` |
+| Non-SAP shows SAP fields | Switch to **Non-SAP**; do not use session recorder for browser-only steps |
+| Empty SAP fields | Enable scripting; keep SAP focused; increase max fields in Settings |
+| Capture timed out | Keep SAP focused; reduce open sessions; check `data/snapshot-last.json` |
+| Hotkey conflict | Change hotkey in Settings |
+| Export fails | Ensure screenshot files exist on disk |
 
 ---
 
@@ -268,7 +285,7 @@ npm start          # run from source
 npm run dist       # build Windows installer + portable exe
 ```
 
-Main technologies: **Electron**, **electron-builder**, **docx**, **screenshot-desktop**, **SortableJS**.
+Main technologies: **Electron**, **electron-builder**, **docx**, **screenshot-desktop**, **SortableJS**, **SAP GUI Scripting** (VBScript + PowerShell).
 
 ---
 
