@@ -277,10 +277,38 @@ ipcMain.handle("capture-session-step", async () => runSessionCapture());
 ipcMain.handle("reset-session-recorder", async () => { resetSessionRecorder(); return true; });
 ipcMain.handle("get-settings", async () => loadSettings(getProjectRoot()));
 ipcMain.handle("save-settings", async (_event, settings) => {
- const merged = saveSettings(getProjectRoot(), settings || {});
+ // Merge over the currently-saved settings so a partial save (e.g. just the
+ // hotkey) never wipes other persisted values like captureTarget or branding.
+ const current = loadSettings(getProjectRoot());
+ const incoming = settings || {};
+ const next = { ...current, ...incoming };
+ if (incoming.branding) next.branding = { ...current.branding, ...incoming.branding };
+ const merged = saveSettings(getProjectRoot(), next);
  const reg = registerCaptureHotkey(merged.captureHotkey);
  const sessionReg = registerSessionHotkey(merged.sessionHotkey || "CommandOrControl+Shift+S");
  return { settings: merged, hotkey: reg, sessionHotkey: sessionReg };
+});
+
+ipcMain.handle("pick-logo-file", async () => {
+ if(!mainWindow) throw new Error("Main window not available");
+ const result = await dialog.showOpenDialog(mainWindow, {
+  title: "Choose company logo",
+  filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "bmp"] }],
+  properties: ["openFile"],
+ });
+ if(result.canceled || !result.filePaths || !result.filePaths.length) return { canceled: true };
+ const src = result.filePaths[0];
+ // Copy the logo into data/branding so it travels with the data folder.
+ try{
+  const brandingDir = ensureDir(path.join(getDataDir(), "branding"));
+  const ext = (path.extname(src) || ".png").toLowerCase();
+  const dest = path.join(brandingDir, "logo" + ext);
+  fs.copyFileSync(src, dest);
+  return { ok: true, path: dest };
+ }catch(e){
+  // Fall back to referencing the original location if the copy fails.
+  return { ok: true, path: src };
+ }
 });
 ipcMain.handle("set-compact-mode", async (_event, enable) => applyCompactMode(enable));
 ipcMain.handle("enter-annotate-mode", async () => { enterAnnotateMode(); return true; });

@@ -22,8 +22,12 @@ let project={
 	author:"",
 	version:"1.0",
 	reviewDate: todayDateIso(),
+	documentId:"",
+	department:"",
+	classification:"",
 	steps:[]
 };
+let _brandingLogoPath = "";
 let _compactMode = false;
 let _sortable = null;
 let _captureHotkey = "Alt+C";
@@ -46,11 +50,19 @@ function todayDateIso(){
  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 }
 
+function valueOf(id){
+ const el = document.getElementById(id);
+ return el ? el.value : "";
+}
+
 function syncProjectFromUI(){
  project.title = document.getElementById("title").value.trim();
  project.author = document.getElementById("author").value.trim();
  project.version = document.getElementById("version").value.trim() || "1.0";
  project.reviewDate = document.getElementById("reviewDate").value || todayDateIso();
+ project.documentId = valueOf("documentId").trim();
+ project.department = valueOf("department").trim();
+ project.classification = valueOf("classification");
 }
 
 function syncUIToProject(){
@@ -59,6 +71,9 @@ function syncUIToProject(){
  document.getElementById("version").value = project.version || "1.0";
  if(!project.reviewDate) project.reviewDate = todayDateIso();
  document.getElementById("reviewDate").value = project.reviewDate;
+ const docId = document.getElementById("documentId"); if(docId) docId.value = project.documentId || "";
+ const dept = document.getElementById("department"); if(dept) dept.value = project.department || "";
+ const cls = document.getElementById("classification"); if(cls) cls.value = project.classification || "";
 }
 
 function updateCaptureButtonTitle(){
@@ -459,11 +474,15 @@ function newProject(){
 
 function applyNewProject(){
  const keepAuthor = project.author || document.getElementById("author").value.trim();
+ const keepDept = project.department || valueOf("department").trim();
  project = {
   title:"",
   author: keepAuthor,
   version:"1.0",
   reviewDate: todayDateIso(),
+  documentId:"",
+  department: keepDept,
+  classification:"",
   steps:[]
  };
  _currentProjectPath = "";
@@ -472,6 +491,7 @@ function applyNewProject(){
  document.getElementById("version").value = "1.0";
  document.getElementById("reviewDate").value = todayDateIso();
  if(keepAuthor) document.getElementById("author").value = keepAuthor;
+ syncUIToProject();
  try{ ipcRenderer.invoke("reset-session-recorder"); }catch(e){}
  setStatus("New SOP started.", "success");
  renderDeferred();
@@ -557,7 +577,12 @@ async function exportDoc(){
  try{
   ensureDir(getExportsDir());
   const { exportWord } = require("./exporter");
-  const outPath = await exportWord(project);
+  let branding = null;
+  try{
+   const settings = await ipcRenderer.invoke("get-settings");
+   branding = settings && settings.branding ? settings.branding : null;
+  }catch(e){ /* export with default branding */ }
+  const outPath = await exportWord(project, branding);
   setStatus(`DOCX exported: ${outPath}`, "success");
  }catch(err){
   setStatus("Export failed: "+err.message, "error");
@@ -649,6 +674,7 @@ async function openSettings(){
    const maxFields = Number(settings.maxCaptureFields);
    maxFieldsInput.value = Number.isFinite(maxFields) && maxFields >= 1 ? maxFields : 10;
   }
+  applyBrandingToUI(settings.branding || {});
   document.getElementById("hotkeyStatus").textContent = "Current: " + displayHotkey(_captureHotkey);
   const paths = await ipcRenderer.invoke("get-data-paths");
   const pathEl = document.getElementById("dataFolderPath");
@@ -661,6 +687,60 @@ async function openSettings(){
  }catch(err){
   setStatus("Could not load settings: "+err.message, "error");
  }
+}
+
+function applyBrandingToUI(branding){
+ const b = branding || {};
+ _brandingLogoPath = b.logoPath || "";
+ const set = (id, val)=>{ const el = document.getElementById(id); if(el) el.value = val; };
+ set("brandCompany", b.companyName || "");
+ set("brandAccent", b.accentColor || "#F97316");
+ set("brandFooter", b.footerText || "");
+ set("brandTemplate", b.template || "standard");
+ renderLogoPreview();
+}
+
+function renderLogoPreview(){
+ const img = document.getElementById("brandLogoPreview");
+ const name = document.getElementById("brandLogoName");
+ if(img){
+  if(_brandingLogoPath){
+   try{ img.src = pathToFileURL(path.resolve(_brandingLogoPath)).href; }catch(e){ img.src = _brandingLogoPath; }
+   img.style.display = "inline-block";
+  } else {
+   img.removeAttribute("src");
+   img.style.display = "none";
+  }
+ }
+ if(name) name.textContent = _brandingLogoPath ? path.basename(_brandingLogoPath) : "No logo selected";
+}
+
+async function pickLogo(){
+ try{
+  const result = await ipcRenderer.invoke("pick-logo-file");
+  if(result && result.canceled) return;
+  if(result && result.ok && result.path){
+   _brandingLogoPath = result.path;
+   renderLogoPreview();
+  }
+ }catch(err){
+  setStatus("Could not choose logo: "+err.message, "error");
+ }
+}
+
+function removeLogo(){
+ _brandingLogoPath = "";
+ renderLogoPreview();
+}
+
+function readBrandingFromUI(){
+ return {
+  companyName: (valueOf("brandCompany") || "").trim(),
+  logoPath: _brandingLogoPath || "",
+  accentColor: valueOf("brandAccent") || "#F97316",
+  footerText: (valueOf("brandFooter") || "").trim(),
+  template: valueOf("brandTemplate") || "standard",
+ };
 }
 
 async function openDataFolder(){
@@ -683,8 +763,9 @@ async function saveSettingsUi(){
  let maxCaptureFields = maxFieldsInput ? parseInt(maxFieldsInput.value, 10) : 10;
  if(!Number.isFinite(maxCaptureFields) || maxCaptureFields < 1) maxCaptureFields = 1;
  if(maxCaptureFields > 50) maxCaptureFields = 50;
+ const branding = readBrandingFromUI();
  try{
-  const result = await ipcRenderer.invoke("save-settings", { captureHotkey: hotkey, maxCaptureFields });
+  const result = await ipcRenderer.invoke("save-settings", { captureHotkey: hotkey, maxCaptureFields, branding });
   if(result.hotkey && !result.hotkey.ok){
    document.getElementById("hotkeyStatus").textContent = result.hotkey.error;
    document.getElementById("hotkeyStatus").style.color = "#a00";
@@ -693,7 +774,7 @@ async function saveSettingsUi(){
   _captureHotkey = result.settings.captureHotkey;
   updateCaptureButtonTitle();
   closeSettings();
-  setStatus("Settings saved. Capture hotkey: " + displayHotkey(_captureHotkey) + ` · max fields: ${maxCaptureFields}`);
+  setStatus("Settings saved. Capture hotkey: " + displayHotkey(_captureHotkey) + ` · max fields: ${maxCaptureFields} · template: ${branding.template}`);
  }catch(err){
   setStatus("Failed to save settings: "+err.message, "error");
  }
@@ -769,6 +850,8 @@ function setupOtherEventListeners(){
   if(btn.dataset.action === "settings-cancel") closeSettings();
   if(btn.dataset.action === "settings-save") saveSettingsUi();
   if(btn.dataset.action === "open-data-folder") openDataFolder();
+  if(btn.dataset.action === "brand-pick-logo") pickLogo();
+  if(btn.dataset.action === "brand-remove-logo") removeLogo();
  });
 
  document.getElementById("confirmModal")?.addEventListener("click", (e)=>{
