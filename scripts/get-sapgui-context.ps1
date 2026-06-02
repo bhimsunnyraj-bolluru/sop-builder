@@ -122,6 +122,33 @@ public class SapWin32 {
         return list;
     }
 
+    // Top-most visible top-level application window whose title does NOT contain
+    // the excluded text (our own app). Generic — works for any app, not just
+    // browsers. EnumWindows yields windows in Z-order, so the first match is the
+    // window sitting in front (the one behind SOP Builder once it is hidden).
+    public static IntPtr FindTopVisibleAppWindow(string excludeTitleContains) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hWnd, lParam) => {
+            if (!IsWindowVisible(hWnd)) return true;
+            if (GetParent(hWnd) != IntPtr.Zero) return true; // top-level only
+            var text = ReadWindowText(hWnd);
+            if (string.IsNullOrWhiteSpace(text)) return true;
+            var cls = ReadClassName(hWnd);
+            if (cls == "Progman" || cls == "WorkerW" || cls == "Shell_TrayWnd" ||
+                cls == "Windows.UI.Core.CoreWindow" || cls == "NotifyIconOverflowWindow" ||
+                cls == "Windows.UI.Composition.DesktopWindowContentBridge") return true;
+            var tl = text.ToLower();
+            if (tl == "program manager") return true;
+            if (!string.IsNullOrEmpty(excludeTitleContains) &&
+                tl.IndexOf(excludeTitleContains.ToLower()) >= 0) return true;
+            if (tl.IndexOf(" - cursor") >= 0) return true;
+            if (tl.IndexOf("visual studio code") >= 0) return true;
+            found = hWnd;
+            return false; // stop at first (top-most) match
+        }, IntPtr.Zero);
+        return found;
+    }
+
     public static string FindBestBrowserWindowTitle(string excludeTitleContains) {
         string bestTitle = "";
         EnumWindows((hWnd, lParam) => {
@@ -511,18 +538,30 @@ if ($CaptureMode -eq 'NonSap') {
         $top = [SapWin32]::GetTopLevelWindow($rawFg)
         if ($top -ne [IntPtr]::Zero) { $hwnd = $top }
     }
-    $cls = ""
     $title = ""
-    $rect = $null
     if ($hwnd -ne [IntPtr]::Zero) {
-        $cls = [SapWin32]::ReadClassName($hwnd)
         $title = [SapWin32]::BestWindowTitle($hwnd)
         if (-not $title) { $title = [SapWin32]::ReadWindowText($hwnd) }
         if (-not $title) { $title = Get-UiaWindowName $hwnd }
-        if ((Test-OwnAppTitle $title) -and $rawFg -ne $hwnd) {
-            $alt = [SapWin32]::ReadWindowText($rawFg)
-            if ($alt -and -not (Test-OwnAppTitle $alt)) { $title = $alt }
+    }
+
+    # The foreground may still be SOP Builder itself (capture clicked from the
+    # app, or focus not yet handed off), or a dev tool / empty title. In that
+    # case fall back to the top-most visible application window that is not ours.
+    if ($hwnd -eq [IntPtr]::Zero -or (Test-ExcludedNonBrowserTitle $title)) {
+        $alt = [SapWin32]::FindTopVisibleAppWindow("SOP Builder")
+        if ($alt -ne [IntPtr]::Zero) {
+            $hwnd = $alt
+            $title = [SapWin32]::BestWindowTitle($alt)
+            if (-not $title) { $title = [SapWin32]::ReadWindowText($alt) }
+            if (-not $title) { $title = Get-UiaWindowName $alt }
         }
+    }
+
+    $cls = ""
+    $rect = $null
+    if ($hwnd -ne [IntPtr]::Zero) {
+        $cls = [SapWin32]::ReadClassName($hwnd)
         $rect = Get-SapWindowRectJson $hwnd
     }
     $output = [ordered]@{
