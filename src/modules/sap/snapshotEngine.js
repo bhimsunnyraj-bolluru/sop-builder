@@ -8,7 +8,10 @@ const { getSapSnapshotVbsPath } = require("../../../paths");
 const { deferSnapshotDebug } = require("../../captureLog");
 
 const execFileAsync = promisify(execFile);
-const VBS_TIMEOUT_MS = 6000;
+// The VBScript enforces its own ~7s wall-clock budget and returns partial
+// results; this host timeout sits above it so cscript is only hard-killed if
+// the bridge itself hangs (COM stall), not during normal deep discovery.
+const VBS_TIMEOUT_MS = 10000;
 
 function emptySnapshot(error = "") {
 	return {

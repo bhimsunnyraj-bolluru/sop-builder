@@ -1,5 +1,14 @@
 ' SAP GUI Scripting bridge — VBScript late binding (PowerShell TYPE_E_CANTLOADLIBRARY workaround).
-' Usage: cscript //Nologo capture-sap-snapshot.vbs
+'
+' Generic, transaction-agnostic capture: walks the active SAP window's control
+' tree from <window>/usr, reads every value-bearing field (text/combo/check/radio),
+' reads ALV grids and table controls as cells, and prunes control-host subtrees
+' (ALV/tree/HTML shells) once read. No hardcoded t-code paths or field names.
+'
+' Bounded by depth / breadth / visited-node / wall-clock caps so it always returns
+' within the host timeout instead of hanging on control-heavy screens (ME21N, etc.).
+'
+' Usage: cscript //Nologo capture-sap-snapshot.vbs [maxFields]
 Option Explicit
 
 Dim gDiscoverMs
@@ -16,6 +25,20 @@ Dim gDbgTypeSamples
 Set gDbgTypeSamples = Nothing
 Dim gSessionDbg
 Set gSessionDbg = Nothing
+
+' --- Generic safety caps (NOT transaction-specific) -------------------------
+Dim gMaxDepth
+gMaxDepth = 24
+Dim gMaxChildrenPerNode
+gMaxChildrenPerNode = 400
+Dim gMaxVisited
+gMaxVisited = 6000
+Dim gBudgetMs
+gBudgetMs = 7000
+Dim gStartTimer
+gStartTimer = 0
+Dim gBudgetHit
+gBudgetHit = False
 
 Function JsonEscape(s)
     If IsNull(s) Or IsEmpty(s) Then JsonEscape = "": Exit Function
@@ -87,57 +110,13 @@ Function SessionDbgJson()
     SessionDbgJson = json
 End Function
 
-Function HasVisibleBounds(ctl)
-    On Error Resume Next
-    HasVisibleBounds = (ReadIntCoord(ctl, "ScreenWidth", "Width") > 0 And ReadIntCoord(ctl, "ScreenHeight", "Height") > 0)
-End Function
-
-Function PathTail(pathId)
-    If Len(pathId) = 0 Then
-        PathTail = ""
-    Else
-        PathTail = Mid(pathId, InStrRev(pathId, "/") + 1)
-    End If
-End Function
-
-Function VerifyControlForPath(ctl, pathId)
-    On Error Resume Next
-    Dim cid, tail, reqTail, lt, lPath
-    VerifyControlForPath = False
-    If ctl Is Nothing Or Len(pathId) = 0 Then Exit Function
-    cid = Trim(ctl.Id)
-    If Len(cid) = 0 Then Exit Function
-    reqTail = PathTail(pathId)
-    tail = PathTail(cid)
-    If StrComp(tail, reqTail, vbTextCompare) <> 0 Then Exit Function
-    lt = LCase(ctl.Type)
-    lPath = LCase(pathId)
-    If InStr(lPath, "/lbl") > 0 Then
-        If InStr(lt, "label") = 0 Then Exit Function
-    ElseIf InStr(lPath, "/ctxt") > 0 Or InStr(lPath, "/txt") > 0 Or InStr(lPath, "/cmb") > 0 Then
-        If InStr(lt, "text") = 0 And InStr(lt, "combo") = 0 And InStr(lt, "check") = 0 Then Exit Function
-    ElseIf InStr(lPath, "shell") > 0 Or InStr(lPath, "/cntl") > 0 Or InStr(lPath, "grid") > 0 Then
-        If InStr(lt, "textfield") > 0 Then Exit Function
-    End If
-    If InStr(lPath, "shell") > 0 Or InStr(lPath, "/cntlgrid") > 0 Or InStr(lPath, "/cntal") > 0 Then
-        If Not HasVisibleBounds(ctl) And InStr(lt, "grid") = 0 And InStr(lt, "table") = 0 And InStr(lt, "shell") = 0 Then Exit Function
-    End If
-    VerifyControlForPath = True
-End Function
-
-Function FindByIdVerified(session, pathId)
-    On Error Resume Next
-    Dim ctl
-    Set FindByIdVerified = Nothing
-    If Len(pathId) = 0 Then Exit Function
-    Err.Clear
-    Set ctl = Nothing
-    Set ctl = session.FindById(pathId)
-    If Err.Number <> 0 Then
-        Err.Clear
-        Exit Function
-    End If
-    If VerifyControlForPath(ctl, pathId) Then Set FindByIdVerified = ctl
+' Wall-clock guard so a control-heavy screen returns partial results instead of
+' being killed by the host timeout. Handles the midnight Timer rollover.
+Function BudgetExceeded()
+    Dim el
+    el = (Timer - gStartTimer) * 1000
+    If el < 0 Then el = el + 86400000
+    BudgetExceeded = (el > gBudgetMs)
 End Function
 
 Function CleanSapFieldLabel(raw)
@@ -176,55 +155,19 @@ Function ReadFieldValue(fld)
     ReadFieldValue = Trim(v)
 End Function
 
-Function CollectionIndexBase(kids)
+' Value-aware read: checkboxes/radios report selection state, everything else
+' falls back to the generic text reader.
+Function ReadControlValue(ctl, lt)
     On Error Resume Next
-    Dim child
-    CollectionIndexBase = 0
-    If kids Is Nothing Then Exit Function
-    Err.Clear
-    Set child = Nothing
-    Set child = kids.Item(CLng(0))
-    If Err.Number = 0 And Not child Is Nothing Then
-        CollectionIndexBase = 0
+    If InStr(lt, "checkbox") > 0 Or InStr(lt, "radiobutton") > 0 Then
+        If ctl.Selected Then
+            ReadControlValue = "X"
+        Else
+            ReadControlValue = ""
+        End If
         Exit Function
     End If
-    Err.Clear
-    Set child = Nothing
-    Set child = kids.Item(CLng(1))
-    If Err.Number = 0 And Not child Is Nothing Then
-        CollectionIndexBase = 1
-        Exit Function
-    End If
-    Err.Clear
-    CollectionIndexBase = 0
-End Function
-
-Function ChildAt(parent, kids, index)
-    On Error Resume Next
-    Dim child
-    Set ChildAt = Nothing
-    If kids Is Nothing Then Exit Function
-    Err.Clear
-    Set child = Nothing
-    Set child = kids.Item(CLng(index))
-    If Err.Number = 0 And Not child Is Nothing Then
-        Set ChildAt = child
-        Exit Function
-    End If
-    Err.Clear
-    Set child = Nothing
-    Set child = kids(CLng(index))
-    If Err.Number = 0 And Not child Is Nothing Then
-        Set ChildAt = child
-        Exit Function
-    End If
-    Err.Clear
-    If Not parent Is Nothing Then
-        Set child = Nothing
-        Set child = parent.Children(CLng(index))
-        If Err.Number = 0 And Not child Is Nothing Then Set ChildAt = child
-    End If
-    Err.Clear
+    ReadControlValue = ReadFieldValue(ctl)
 End Function
 
 Function ResolveControlName(fld)
@@ -260,59 +203,6 @@ Function IsTechnicalType(t)
         Case Else
             IsTechnicalType = False
     End Select
-End Function
-
-Function ReadIntCoord(fld, primaryProp, fallbackProp)
-    On Error Resume Next
-    Dim v
-    v = 0
-    If LCase(primaryProp) = "screenleft" Then v = fld.ScreenLeft
-    If LCase(primaryProp) = "screentop" Then v = fld.ScreenTop
-    If LCase(primaryProp) = "screenwidth" Then v = fld.ScreenWidth
-    If LCase(primaryProp) = "screenheight" Then v = fld.ScreenHeight
-    If (Not IsNumeric(v) Or CLng(v) = 0) And Len(fallbackProp) > 0 Then
-        If LCase(fallbackProp) = "left" Then v = fld.Left
-        If LCase(fallbackProp) = "top" Then v = fld.Top
-        If LCase(fallbackProp) = "width" Then v = fld.Width
-        If LCase(fallbackProp) = "height" Then v = fld.Height
-    End If
-    If Not IsNumeric(v) Then
-        ReadIntCoord = 0
-    Else
-        ReadIntCoord = CLng(v)
-    End If
-End Function
-
-Function IsEditableFieldId(id)
-    If InStr(1, id, "ctxt", vbTextCompare) > 0 Then
-        IsEditableFieldId = True
-        Exit Function
-    End If
-    If InStr(1, id, "/txt", vbTextCompare) > 0 Then
-        IsEditableFieldId = True
-        Exit Function
-    End If
-    If InStr(1, id, "cmb", vbTextCompare) > 0 Then
-        IsEditableFieldId = True
-        Exit Function
-    End If
-    If InStr(1, id, "pwd", vbTextCompare) > 0 Then
-        IsEditableFieldId = True
-        Exit Function
-    End If
-    If InStr(1, id, "chk", vbTextCompare) > 0 Then
-        IsEditableFieldId = True
-        Exit Function
-    End If
-    If InStr(1, id, "/cell[", vbTextCompare) > 0 Then
-        IsEditableFieldId = True
-        Exit Function
-    End If
-    IsEditableFieldId = False
-End Function
-
-Function IsCapturedFieldId(id)
-    IsCapturedFieldId = IsEditableFieldId(id)
 End Function
 
 Function IsEditableFieldType(t)
@@ -363,6 +253,18 @@ Function CaptureLimitReached(count)
     CaptureLimitReached = (gMaxCaptureFields > 0 And count >= gMaxCaptureFields)
 End Function
 
+Sub DbgNoteType(t)
+    On Error Resume Next
+    If gDbgTypeSamples Is Nothing Then Set gDbgTypeSamples = CreateObject("Scripting.Dictionary")
+    If Len(t) > 0 Then
+        If Not gDbgTypeSamples.Exists(t) Then
+            If gDbgTypeSamples.Count < 25 Then gDbgTypeSamples.Add t, True
+        End If
+    End If
+End Sub
+
+' Geometry (left/top/width/height) is not consumed downstream, so it is emitted
+' as 0 rather than paying 4–8 cross-process COM reads per field.
 Sub AppendControlNode(ctl, t, id, txt, nm, ByRef arr, ByRef count, labelOverride)
     Dim node, fieldLabel, rawTip
     If CaptureLimitReached(count) Then Exit Sub
@@ -377,14 +279,14 @@ Sub AppendControlNode(ctl, t, id, txt, nm, ByRef arr, ByRef count, labelOverride
     node.Add "name", nm
     node.Add "text", txt
     node.Add "value", txt
-    node.Add "tooltip", ctl.Tooltip
-    node.Add "left", ReadIntCoord(ctl, "ScreenLeft", "Left")
-    node.Add "top", ReadIntCoord(ctl, "ScreenTop", "Top")
-    node.Add "width", ReadIntCoord(ctl, "ScreenWidth", "Width")
-    node.Add "height", ReadIntCoord(ctl, "ScreenHeight", "Height")
+    node.Add "tooltip", SafeStr(ctl.Tooltip)
+    node.Add "left", 0
+    node.Add "top", 0
+    node.Add "width", 0
+    node.Add "height", 0
     If Len(fieldLabel) > 0 Then node.Add "label", fieldLabel
     If InStr(LCase(t), "ctextfield") > 0 Then
-        rawTip = Trim(ctl.DefaultTooltip)
+        rawTip = Trim(SafeStr(ctl.DefaultTooltip))
         If Len(rawTip) > 0 Then node.Add "defaultTooltip", rawTip
     End If
     Set arr(count) = node
@@ -451,20 +353,6 @@ Function GetGridColumnTitle(grid, col)
     GetGridColumnTitle = "Column " & CStr(col + 1)
 End Function
 
-Sub DbgNoteControlType(ctl)
-    On Error Resume Next
-    Dim t
-    If ctl Is Nothing Then Exit Sub
-    gDbgVisited = gDbgVisited + 1
-    If gDbgTypeSamples Is Nothing Then Set gDbgTypeSamples = CreateObject("Scripting.Dictionary")
-    t = Trim(ctl.Type)
-    If Len(t) > 0 Then
-        If Not gDbgTypeSamples.Exists(t) Then
-            If gDbgTypeSamples.Count < 20 Then gDbgTypeSamples.Add t, True
-        End If
-    End If
-End Sub
-
 Function GridLooksReadable(grid)
     On Error Resume Next
     Dim rc, cc, lt
@@ -485,8 +373,11 @@ End Function
 
 Sub ResolveActualGridControl(root, ByRef gridOut, depth)
     On Error Resume Next
-    Dim rowCount, colCount, kids, i, child, gv
-    If root Is Nothing Or depth > 18 Then Exit Sub
+    Dim kids, i, child, gv, lt
+    ' ALV grids sit only a few levels under their host; a shallow cap avoids an
+    ' expensive deep scan (with throwing GetCellValue/GetGridView calls) on
+    ' non-grid shells such as trees, HTML viewers and toolbars.
+    If root Is Nothing Or depth > 6 Then Exit Sub
     If Not gridOut Is Nothing Then Exit Sub
 
     If GridLooksReadable(root) Then
@@ -495,13 +386,17 @@ Sub ResolveActualGridControl(root, ByRef gridOut, depth)
         Exit Sub
     End If
 
-    Err.Clear
-    Set gv = root.GetGridView()
-    If Not gv Is Nothing Then
-        If GridLooksReadable(gv) Then
-            gDbgGridCandidates = gDbgGridCandidates + 1
-            Set gridOut = gv
-            Exit Sub
+    ' GetGridView() exists only on shell controls and raises (slow) on others.
+    lt = LCase(root.Type)
+    If InStr(lt, "shell") > 0 Then
+        Err.Clear
+        Set gv = root.GetGridView()
+        If Not gv Is Nothing Then
+            If GridLooksReadable(gv) Then
+                gDbgGridCandidates = gDbgGridCandidates + 1
+                Set gridOut = gv
+                Exit Sub
+            End If
         End If
     End If
 
@@ -572,6 +467,8 @@ Sub CaptureGridValues(session, grid, gridId, ByRef arr, ByRef count, ByRef seen)
     If maxC > 30 Then maxC = 30
 
     For r = firstRow To maxR
+        If CaptureLimitReached(count) Then Exit Sub
+        If BudgetExceeded() Then gBudgetHit = True : Exit Sub
         For c = 0 To maxC
             val = ReadGridCellValue(grid, r, c)
             If Len(val) > 0 Then
@@ -599,512 +496,19 @@ Sub TryCaptureGridControl(session, ctl, gridId, ByRef arr, ByRef count, ByRef se
     End If
 End Sub
 
-Sub ProbeAlvShellPaths(session, usrPath, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim usr, i, child, id, suffixes, si, probeId, ctl, j, subChild
-    suffixes = Array("/shellcont/shell", "/shellcont/shell/collector", "/shellcont/shell/shellcont[0]/shell", "/shellcont/shell/shellcont/shell")
-    Set usr = session.FindById(usrPath)
-    If usr Is Nothing Then Exit Sub
-
-    For i = 0 To 120
-        Err.Clear
-        Set child = Nothing
-        Set child = usr.Children(i)
-        If Err.Number <> 0 Then Exit For
-        If child Is Nothing Then Exit For
-        id = LCase(child.Id)
-        If InStr(id, "cntl") > 0 Or InStr(id, "grid") > 0 Or InStr(id, "alv") > 0 Then
-            For si = 0 To UBound(suffixes)
-                probeId = child.Id & suffixes(si)
-                Set ctl = FindByIdVerified(session, probeId)
-                If Not ctl Is Nothing Then
-                    DbgNoteControlType ctl
-                    TryCaptureGridControl session, ctl, probeId, arr, count, seen
-                End If
-            Next
-            TryCaptureGridControl session, child, child.Id, arr, count, seen
-        End If
-    Next
-End Sub
-
-Sub ProbePathIfExists(session, probePath, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    On Error Resume Next
-    Dim ctl, lt
-    If Len(probePath) = 0 Then Exit Sub
-    Set ctl = FindByIdVerified(session, probePath)
-    If ctl Is Nothing Then Exit Sub
-    foundCount = foundCount + 1
-    DbgNoteControlType ctl
-    ProcessSapControl session, ctl, arr, count, seen
-    TryCaptureGridControl session, ctl, probePath, arr, count, seen
-    lt = LCase(ctl.Type)
-    If InStr(lt, "table") > 0 Then
-        CaptureTableFields session, probePath, ctl, arr, count, seen
-    End If
-End Sub
-
-Sub ProbeCntlGridPathsMinimal(session, usrPath, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    On Error Resume Next
-    Dim paths, i
-    paths = Array( _
-        usrPath & "/cntlGRID1/shellcont/shell/shellcont[1]/shell", _
-        usrPath & "/cntlGRID1/shellcont/shell/collector", _
-        usrPath & "/cntlGRID1/shellcont/shell", _
-        usrPath & "/cntlGRID2/shellcont/shell/shellcont[1]/shell", _
-        usrPath & "/cntlALV/shellcont/shell/collector", _
-        usrPath & "/cntlCUSTOM_CONTROL/shellcont/shell" _
-    )
-    For i = 0 To UBound(paths)
-        ProbePathIfExists session, paths(i), arr, count, seen, foundCount
-    Next
-End Sub
-
-Sub ProbeCntlGridPathsFast(session, usrPath, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    On Error Resume Next
-    Dim cntlNames, ci, shellSuffixes, si, probePath
-    cntlNames = Array( _
-        "GRID1", "GRID2", "GRID", "ALV", "ALV_CONTAINER", "ALV_TREE", _
-        "CONTAINER", "CUSTOM_CONTROL", "LIST", "TABLE" _
-    )
-    shellSuffixes = Array( _
-        "", "/shellcont/shell", "/shellcont/shell/collector", _
-        "/shellcont/shell/shellcont[1]/shell", "/shellcont/shell/shellcont[0]/shell", _
-        "/shellcont/shell/shellcont/shell" _
-    )
-
-    For ci = 0 To UBound(cntlNames)
-        For si = 0 To UBound(shellSuffixes)
-            probePath = usrPath & "/cntl" & cntlNames(ci) & shellSuffixes(si)
-            ProbePathIfExists session, probePath, arr, count, seen, foundCount
-        Next
-    Next
-End Sub
-
-Sub ProbeCntlPathsByFindById(session, usrPath, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    On Error Resume Next
-    Dim ci, probePath
-    ProbeCntlGridPathsFast session, usrPath, arr, count, seen, foundCount
-    For ci = 0 To 12
-        probePath = usrPath & "/cntl" & CStr(ci)
-        ProbePathIfExists session, probePath, arr, count, seen, foundCount
-        probePath = usrPath & "/cntlGRID" & CStr(ci)
-        ProbePathIfExists session, probePath, arr, count, seen, foundCount
-    Next
-End Sub
-
-Sub ProbeSubscreensByFindById(session, usrPath, prog, scr, ByRef arr, ByRef count, ByRef seen, ByRef foundCount, span)
-    On Error Resume Next
-    Dim prefixes, pi, n, scrNum, probePath, scrTry
-    If Len(prog) = 0 Then Exit Sub
-    If span <= 0 Then span = 3
-
-    prefixes = Array("subSUBSCREEN_BODY", "subSUBSCREEN_HEADER", "subSCREEN", "subSUBSCREEN")
-    If IsNumeric(scr) Then scrNum = CLng(scr)
-    For n = scrNum - span To scrNum + span
-        scrTry = CStr(n)
-        For pi = 0 To UBound(prefixes)
-            probePath = usrPath & "/" & prefixes(pi) & ":" & prog & ":" & scrTry
-            ProbePathIfExists session, probePath, arr, count, seen, foundCount
-        Next
-    Next
-End Sub
-
-Sub ProbeSelectionFieldsByFindById(session, usrPath, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    On Error Resume Next
-    Dim suffixes, i, prefixes, pi, fieldId, fld
-    prefixes = Array("ctxt")
-    suffixes = Array( _
-        "S_EBELN-LOW", "S_EBELN-HIGH", "S_LIFNR-LOW", "S_LIFNR-HIGH", _
-        "S_MATNR-LOW", "S_MATNR-HIGH", "S_WERKS-LOW", "S_BUKRS-LOW", _
-        "S_BEDAT-LOW", "S_BEDAT-HIGH", "S_BSART-LOW", "S_EKORG-LOW", _
-        "S_EKORG-HIGH", "S_EKGRP-LOW", "S_EKGRP-HIGH", "S_STATU-LOW", _
-        "S_AEDAT-LOW", "S_AEDAT-HIGH" _
-    )
-    For i = 0 To UBound(suffixes)
-        For pi = 0 To UBound(prefixes)
-            fieldId = usrPath & "/" & prefixes(pi) & suffixes(i)
-            If Not seen.Exists(fieldId) Then
-                Set fld = FindByIdVerified(session, fieldId)
-                If Not fld Is Nothing Then
-                    foundCount = foundCount + 1
-                    ProcessSapControl session, fld, arr, count, seen
-                End If
-            End If
-        Next
-    Next
-End Sub
-
-Sub ProbeSelectionFieldsInContainer(session, containerPath, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    On Error Resume Next
-    Dim suffixes, i, prefixes, pi, fieldId, fld
-    If Len(containerPath) = 0 Then Exit Sub
-    prefixes = Array("ctxt")
-    suffixes = Array( _
-        "S_EBELN-LOW", "S_EBELN-HIGH", "S_LIFNR-LOW", "S_LIFNR-HIGH", _
-        "S_MATNR-LOW", "S_MATNR-HIGH", "S_WERKS-LOW", "S_BUKRS-LOW", _
-        "S_BEDAT-LOW", "S_BEDAT-HIGH", "S_BSART-LOW", "S_EKORG-LOW", _
-        "S_EKORG-HIGH", "S_EKGRP-LOW", "S_EKGRP-HIGH", "S_STATU-LOW", _
-        "S_AEDAT-LOW", "S_AEDAT-HIGH" _
-    )
-    For i = 0 To UBound(suffixes)
-        For pi = 0 To UBound(prefixes)
-            fieldId = containerPath & "/" & prefixes(pi) & suffixes(i)
-            If Not seen.Exists(fieldId) Then
-                Set fld = FindByIdVerified(session, fieldId)
-                If Not fld Is Nothing Then
-                    foundCount = foundCount + 1
-                    ProcessSapControl session, fld, arr, count, seen
-                End If
-            End If
-        Next
-    Next
-End Sub
-
-Sub ProbeFindAllOnContainer(session, container, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    On Error Resume Next
-    Dim names, types, ni, ti, coll, i, ctl
-    If container Is Nothing Then Exit Sub
-    names = Array( _
-        "S_EBELN", "S_LIFNR", "S_MATNR", "S_WERKS", "S_BUKRS", "S_BEDAT", _
-        "S_EKORG", "S_EKGRP", "S_BSART", _
-        "EBELN", "LIFNR", "MATNR", "WERKS", "BUKRS", "EKORG", "EKGRP", "BSART", _
-        "AUART", "KUNNR", "KUNWE" _
-    )
-    types = Array("GuiTextField", "GuiCTextField", "GuiComboBox", "GuiCheckBox")
-    For ni = 0 To UBound(names)
-        For ti = 0 To UBound(types)
-            Err.Clear
-            Set coll = container.FindAllByName(names(ni), types(ti))
-            If Err.Number = 0 And Not coll Is Nothing Then
-                For i = 0 To coll.Count - 1
-                    Set ctl = coll.Item(i)
-                    If Not ctl Is Nothing Then
-                        foundCount = foundCount + 1
-                        ProcessSapControl session, ctl, arr, count, seen
-                    End If
-                Next
-            End If
-        Next
-    Next
-End Sub
-
-Sub DiscoverByPathProbing(session, usrPath, prog, scr, ByRef arr, ByRef count, ByRef seen, lightMode)
-    On Error Resume Next
-    Dim usr, foundCount, usrChildCount, subSpan
-    foundCount = 0
-    usrChildCount = -1
-    If IsEmpty(lightMode) Then lightMode = False
-
-    Set usr = session.FindById(usrPath)
-    If Not usr Is Nothing Then
-        Err.Clear
-        usrChildCount = usr.Children.Count
-        SessionDbgSet "usrChildrenCount", usrChildCount
-        If Not lightMode Then ProbeFindAllOnContainer session, usr, arr, count, seen, foundCount
-    End If
-
-    If lightMode Then
-        ProbeSelectionFieldsByFindById session, usrPath, arr, count, seen, foundCount
-    Else
-        ProbeCntlPathsByFindById session, usrPath, arr, count, seen, foundCount
-        subSpan = 3
-        If StrComp(prog, "SAPMV45A", vbTextCompare) = 0 Then subSpan = 15
-        ProbeSubscreensByFindById session, usrPath, prog, scr, arr, count, seen, foundCount, subSpan
-        ProbeSelectionFieldsByFindById session, usrPath, arr, count, seen, foundCount
-        ProbeAlvShellPathsByFindById session, usrPath, arr, count, seen, foundCount
-    End If
-
-    SessionDbgSet "pathProbeHits", foundCount
-End Sub
-
-Sub ProbeShellPathsForCntl(session, cntlId, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim suffixes, si, probeId, ctl
-    If Len(cntlId) = 0 Then Exit Sub
-    suffixes = Array("/shellcont/shell", "/shellcont/shell/collector", "/shellcont/shell/shellcont[1]/shell")
-    For si = 0 To UBound(suffixes)
-        probeId = cntlId & suffixes(si)
-        Set ctl = FindByIdVerified(session, probeId)
-        If Not ctl Is Nothing Then
-            ProcessSapControl session, ctl, arr, count, seen
-            TryCaptureGridControl session, ctl, probeId, arr, count, seen
-        End If
-    Next
-End Sub
-
-Sub DiscoverUsrChildrenByIndex(session, usrPath, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim usr, i, child, maxI, childCount, cid, lt, probeChild
-    Set usr = session.FindById(usrPath)
-    If usr Is Nothing Then Exit Sub
-    childCount = usr.Children.Count
-    SessionDbgSet "usrChildrenCount", childCount
-    If childCount <= 0 Then Exit Sub
-    Set probeChild = usr.Children(0)
-    If probeChild Is Nothing Or Len(Trim(probeChild.Id)) = 0 Then
-        SessionDbgSet "usrChildrenIndexed", False
-        Exit Sub
-    End If
-    SessionDbgSet "usrChildrenIndexed", True
-    maxI = childCount - 1
-    If maxI > 400 Then maxI = 400
-    For i = 0 To maxI
-        Err.Clear
-        Set child = Nothing
-        Set child = usr.Children(i)
-        If Err.Number <> 0 Then
-            Err.Clear
-            Set child = usr.Children.Item(i)
-        End If
-        If Not child Is Nothing Then
-            ProcessSapControl session, child, arr, count, seen
-            cid = LCase(child.Id)
-            lt = LCase(child.Type)
-            If InStr(cid, "cntl") > 0 Or InStr(cid, "grid") > 0 Or InStr(cid, "alv") > 0 Then
-                ProbeShellPathsForCntl session, child.Id, arr, count, seen
-            End If
-            If InStr(lt, "table") > 0 Or InStr(cid, "/tbl") > 0 Then
-                CaptureTableFields session, child.Id, child, arr, count, seen
-            End If
-            TryCaptureGridControl session, child, child.Id, arr, count, seen
-        End If
-    Next
-End Sub
-
-Sub ProbeAlvShellPathsByFindById(session, usrPath, ByRef arr, ByRef count, ByRef seen, ByRef foundCount)
-    ProbeCntlGridPathsFast session, usrPath, arr, count, seen, foundCount
-End Sub
-
-Sub WalkAllChildren(session, ctl, ByRef arr, ByRef count, ByRef seen, depth)
-    On Error Resume Next
-    Dim kids, i, child, childCount, childId
-    If ctl Is Nothing Or depth > 48 Then Exit Sub
-
-    DbgNoteControlType ctl
-    ProcessSapControl session, ctl, arr, count, seen
-    If Len(ctl.Id) > 0 Then TryCaptureGridControl session, ctl, ctl.Id, arr, count, seen
-
-    Set kids = ctl.Children
-    If Err.Number <> 0 Or kids Is Nothing Then Exit Sub
-    childCount = kids.Count
-    For i = 0 To childCount - 1
-        Err.Clear
-        Set child = Nothing
-        Set child = kids(i)
-        If Err.Number <> 0 Then
-            Err.Clear
-            Set child = kids.Item(i)
-        End If
-        If Not child Is Nothing Then
-            childId = child.Id
-            If Len(childId) > 0 Then
-                WalkAllChildren session, child, arr, count, seen, depth + 1
-            Else
-                WalkAllChildren session, child, arr, count, seen, depth + 1
-            End If
-        End If
-    Next
-End Sub
-
-Sub DiscoverGenericFallback(session, usrPath, prog, scr, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim visited, usrCtl
-    Set usrCtl = session.FindById(usrPath)
-    If Not usrCtl Is Nothing Then ProbeFindByNameFields session, usrCtl, arr, count, seen
-    ProbeAlvShellPaths session, usrPath, arr, count, seen
-    If Len(prog) > 0 And Len(scr) > 0 Then
-        Set visited = CreateObject("Scripting.Dictionary")
-        ProbeSubscreenContainers session, usrPath, prog, scr, visited, arr, count, seen
-    End If
-End Sub
-
-Sub ProcessSapControl(session, ctl, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim t, lt, txt, nm, id
-    If ctl Is Nothing Then Exit Sub
-    If CaptureLimitReached(count) Then Exit Sub
-
-    DbgNoteControlType ctl
-    t = ctl.Type
-    lt = LCase(t)
-    id = ctl.Id
-    If Len(id) = 0 Then Exit Sub
-
-    If IsTechnicalType(t) Or seen.Exists(id) Then Exit Sub
-    If StrComp(t, "GuiCTextField", vbTextCompare) <> 0 Then Exit Sub
-
-    txt = ReadFieldValue(ctl)
-    If Len(Trim(txt)) = 0 Then Exit Sub
-
-    nm = ResolveControlName(ctl)
-    seen.Add id, True
-    AppendControlNode ctl, t, id, txt, nm, arr, count, ""
-End Sub
-
-Sub AppendFieldById(session, fieldId, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim fld, txt, nm, t
-    If Len(fieldId) = 0 Then Exit Sub
-    If seen.Exists(fieldId) Then Exit Sub
-    Set fld = FindByIdVerified(session, fieldId)
-    If fld Is Nothing Then Exit Sub
-    txt = ReadFieldValue(fld)
-    t = fld.Type
-    nm = ResolveControlName(fld)
-    If IsTechnicalType(t) Then Exit Sub
-    If Len(txt) = 0 And Not HasVisibleBounds(fld) And Len(ReadFieldLabel(fld, t)) = 0 Then Exit Sub
-    seen.Add fieldId, True
-    AppendControlNode fld, t, fieldId, txt, nm, arr, count, ""
-End Sub
-
-Sub DiscoverByIdBfs(session, startId, ByRef visited, ByRef arr, ByRef count, ByRef seen, depth)
-    On Error Resume Next
-    Dim ctl, kids, i, child, childId, childCount
-    If depth > 32 Then Exit Sub
-    If Len(startId) = 0 Then Exit Sub
-    If visited.Exists(startId) Then Exit Sub
-    visited.Add startId, True
-
-    Set ctl = session.FindById(startId)
-    If ctl Is Nothing Then Exit Sub
-
-    ProcessSapControl session, ctl, arr, count, seen
-
-    Set kids = ctl.Children
-    If Err.Number <> 0 Then Exit Sub
-    childCount = kids.Count
-    If childCount <= 0 Then Exit Sub
-
-    For i = 0 To childCount - 1
-        Err.Clear
-        Set child = Nothing
-        Set child = kids(i)
-        If Err.Number <> 0 Then
-            Err.Clear
-            Set child = kids.Item(i)
-        End If
-        If child Is Nothing Then
-            ' skip
-        Else
-            childId = child.Id
-            If Len(childId) > 0 Then
-                DiscoverByIdBfs session, childId, visited, arr, count, seen, depth + 1
-            Else
-                ProcessSapControl session, child, arr, count, seen
-            End If
-        End If
-    Next
-End Sub
-
-Sub TryAppendFieldPath(session, fieldId, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim fld
-    If Len(fieldId) = 0 Then Exit Sub
-    If seen.Exists(fieldId) Then Exit Sub
-    Set fld = session.FindById(fieldId)
-    If fld Is Nothing Then Exit Sub
-    AppendFieldById session, fieldId, arr, count, seen
-End Sub
-
-Function GetStandardFieldSuffixes()
-    GetStandardFieldSuffixes = Array( _
-        "VBAK-AUART", "VBAK-VKORG", "VBAK-VTWEG", "VBAK-SPART", _
-        "VBCOM-VKORG", "VBCOM-VTWEG", "VBCOM-SPART", _
-        "VBAK-KUNNR", "VBAK-KUNWE", "VBAK-BSTNK", "VBAK-AUGRU", "VBAK-VBTYP", _
-        "KUAGV-KUNNR", "KUWEV-KUNNR", "KUNAG-KUNNR", "KUNWE-KUNNR", "AG-KUNNR", _
-        "VBAP-MATNR", "VBAP-KWMENG", "VBAP-VRKME", "VBAP-WERKS", "VBAP-PSTYV", _
-        "VBAP-CHARG", "VBAP-ETDAT", "VBAP-LPRIO", "VBAP-VSTEL", "VBAP-PRCTR", "VBAP-ARKTX", "VBAP-NETWR", "VBAP-POSNR", _
-        "RV45A-MABNR", "VBKD-BSTKD", "VBKD-BSTDK", "VBPA-KUNNR", "VBPA-PARVW" _
-    )
+' True for control-host nodes (ALV/tree/HTML/picture shells, custom containers)
+' whose internal subtree should be read as a grid then pruned. Layout splitters
+' are excluded so their real content is still walked.
+Function ShouldProbeAsGrid(lt)
+    ShouldProbeAsGrid = False
+    If InStr(lt, "splitter") > 0 Then Exit Function
+    If InStr(lt, "gridview") > 0 Then ShouldProbeAsGrid = True : Exit Function
+    If InStr(lt, "containershell") > 0 Then ShouldProbeAsGrid = True : Exit Function
+    If InStr(lt, "customcontrol") > 0 Then ShouldProbeAsGrid = True : Exit Function
+    If InStr(lt, "shell") > 0 Then ShouldProbeAsGrid = True : Exit Function
 End Function
 
-Sub AddContainerPath(ByRef paths, path)
-    If Len(path) = 0 Then Exit Sub
-    If Not paths.Exists(path) Then paths.Add path, True
-End Sub
-
-Sub BuildDynamicContainerPaths(session, usrPath, prog, scr, ByRef paths)
-    Dim n, headerScr, bodyPath, subPath, subPart, ctl, anchors, ai
-    AddContainerPath paths, usrPath
-    If Len(prog) = 0 Then Exit Sub
-
-    If IsNumeric(scr) Then
-        For n = CLng(scr) - 3 To CLng(scr) + 3
-            headerScr = usrPath & "/subSUBSCREEN_HEADER:" & prog & ":" & CStr(n)
-            Set ctl = session.FindById(headerScr)
-            If Not ctl Is Nothing Then
-                AddContainerPath paths, headerScr
-                For subPart = 4698 To 4702
-                    subPath = headerScr & "/subPART-SUB:" & prog & ":" & subPart
-                    If Not session.FindById(subPath) Is Nothing Then AddContainerPath paths, subPath
-                Next
-            End If
-            bodyPath = usrPath & "/subSUBSCREEN_BODY:" & prog & ":" & CStr(n)
-            If Not session.FindById(bodyPath) Is Nothing Then AddContainerPath paths, bodyPath
-        Next
-    End If
-
-    anchors = Array(4001, 4021, 4301, 4400, 4401, 4900)
-    For ai = 0 To UBound(anchors)
-        headerScr = usrPath & "/subSUBSCREEN_HEADER:" & prog & ":" & anchors(ai)
-        If Not session.FindById(headerScr) Is Nothing Then AddContainerPath paths, headerScr
-        bodyPath = usrPath & "/subSUBSCREEN_BODY:" & prog & ":" & anchors(ai)
-        If Not session.FindById(bodyPath) Is Nothing Then AddContainerPath paths, bodyPath
-    Next
-
-    Set ctl = session.FindById(usrPath & "/tabsTAXI_TABSTRIP_OVERVIEW")
-    If Not ctl Is Nothing Then AddContainerPath paths, usrPath & "/tabsTAXI_TABSTRIP_OVERVIEW"
-    Set ctl = session.FindById(usrPath & "/tabsTAXI_TABSTRIP")
-    If Not ctl Is Nothing Then AddContainerPath paths, usrPath & "/tabsTAXI_TABSTRIP"
-End Sub
-
-Sub ProbeFindByIdInContainers(session, ByRef paths, ByRef suffixes, ByRef arr, ByRef count, ByRef seen)
-    Dim path, suffix, fieldId, key
-    For Each key In paths.Keys
-        path = key
-        For Each suffix In suffixes.Keys
-            TryAppendFieldPath session, path & "/ctxt" & suffix, arr, count, seen
-            TryAppendFieldPath session, path & "/txt" & suffix, arr, count, seen
-            TryAppendFieldPath session, path & "/cmb" & suffix, arr, count, seen
-        Next
-    Next
-End Sub
-
-Sub ProbeFindByNameFields(session, container, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    If container Is Nothing Then Exit Sub
-    Dim names, types, ni, ti, name, typ, coll, i, ctl
-    names = Array( _
-        "KUAGV-KUNNR", "KUWEV-KUNNR", "KUNAG-KUNNR", "KUNWE-KUNNR", "AG-KUNNR", "KUNNR", _
-        "VBAP-MATNR", "MATNR", "RV45A-MABNR", "MABNR", _
-        "VBAP-KWMENG", "KWMENG", "VBAP-VRKME", "VRKME", "VBAP-ARKTX", "ARKTX", _
-        "VBAK-AUART", "AUART", "VBAK-VKORG", "VKORG", "VBAK-VTWEG", "VTWEG", "VBAK-SPART", "SPART", _
-        "S_EBELN", "S_LIFNR", "S_MATNR", "S_WERKS", "S_BUKRS", "S_BEDAT", "S_EKORG", "S_EKGRP", "S_BSART", _
-        "EBELN", "LIFNR", "EKORG", "EKGRP", "BSART" _
-    )
-    types = Array("GuiTextField", "GuiCTextField", "GuiComboBox")
-    For ni = 0 To UBound(names)
-        name = names(ni)
-        For ti = 0 To UBound(types)
-            typ = types(ti)
-            Err.Clear
-            Set ctl = container.FindByName(name, typ)
-            If Not ctl Is Nothing Then
-                ProcessSapControl session, ctl, arr, count, seen
-                        ProcessSapControl session, ctl, arr, count, seen
-            End If
-            Err.Clear
-            Set coll = container.FindAllByName(name, typ)
-            If Err.Number = 0 And Not coll Is Nothing Then
-                For i = 0 To coll.Count - 1
-                    Set ctl = coll.Item(i)
-                    ProcessSapControl session, ctl, arr, count, seen
-                    If Not ctl Is Nothing Then ProcessSapControl session, ctl, arr, count, seen
-                Next
-            End If
-        Next
-    Next
-End Sub
+' --- Generic table-control (GuiTableControl) reading ------------------------
 
 Function ExtractSuffixFromControlId(id)
     Dim tail, bracket
@@ -1198,6 +602,16 @@ Function GetColumnFieldName(tbl, col)
     GetColumnFieldName = fieldName
 End Function
 
+Sub RemoveTitleFromMap(ByRef titleMap, title)
+    Dim keys, i, key
+    If titleMap Is Nothing Or Len(title) = 0 Then Exit Sub
+    keys = titleMap.Keys
+    For i = 0 To UBound(keys)
+        key = keys(i)
+        If StrComp(titleMap(key), title, vbTextCompare) = 0 Then titleMap.Remove key
+    Next
+End Sub
+
 Sub BuildTableColumnTitleMap(session, tbl, tblPath, ByRef titleMap)
     On Error Resume Next
     Dim col, maxCol, title, fieldName, suffix, cell, row, c, titleCounts, k
@@ -1251,18 +665,8 @@ Sub BuildTableColumnTitleMap(session, tbl, tblPath, ByRef titleMap)
     Next
 End Sub
 
-Sub RemoveTitleFromMap(ByRef titleMap, title)
-    Dim keys, i, key
-    If titleMap Is Nothing Or Len(title) = 0 Then Exit Sub
-    keys = titleMap.Keys
-    For i = 0 To UBound(keys)
-        key = keys(i)
-        If StrComp(titleMap(key), title, vbTextCompare) = 0 Then titleMap.Remove key
-    Next
-End Sub
-
 Function LookupColumnTitle(ByRef titleMap, fieldId, fieldName)
-    Dim suffix, shortName, title
+    Dim suffix, shortName
     suffix = ExtractSuffixFromControlId(fieldId)
     If Len(suffix) > 0 And titleMap.Exists(suffix) Then
         LookupColumnTitle = titleMap(suffix)
@@ -1280,11 +684,6 @@ Function LookupColumnTitle(ByRef titleMap, fieldId, fieldName)
     End If
     LookupColumnTitle = ""
 End Function
-
-Sub CaptureTableColumnHeaders(session, tbl, tblPath, ByRef arr, ByRef count, ByRef seen)
-    Dim titleMap
-    BuildTableColumnTitleMap session, tbl, tblPath, titleMap
-End Sub
 
 Sub CaptureTableFields(session, tblPath, tbl, ByRef arr, ByRef count, ByRef seen)
     On Error Resume Next
@@ -1320,297 +719,36 @@ Sub CaptureTableFields(session, tblPath, tbl, ByRef arr, ByRef count, ByRef seen
     If maxCol > 39 Then maxCol = 39
 
     For row = 0 To lastRow
+        If CaptureLimitReached(count) Then Exit Sub
+        If BudgetExceeded() Then gBudgetHit = True : Exit Sub
         For c = 0 To maxCol
             Err.Clear
             Set cell = tbl.GetCell(row, c)
             If Err.Number = 0 And Not cell Is Nothing Then
+                ' Read the value FIRST and skip empty cells before paying for
+                ' name/label/column-title lookups (those cost several COM calls
+                ' each; ME21N-style tables are wide and mostly empty).
                 txt = ReadFieldValue(cell)
-                nm = ResolveControlName(cell)
-                cellLabel = ReadFieldLabel(cell, cell.Type)
-                colTitle = LookupColumnTitle(titleMap, cell.Id, nm)
-                If Len(cellLabel) = 0 Then cellLabel = colTitle
-                If Len(cellLabel) = 0 Then cellLabel = GetColumnTitleForIndex(tbl, c)
                 If Len(txt) > 0 And Len(cell.Id) > 0 And Not seen.Exists(cell.Id) Then
                     t = cell.Type
                     If Not IsTechnicalType(t) Then
+                        nm = ResolveControlName(cell)
+                        cellLabel = ReadFieldLabel(cell, t)
+                        colTitle = LookupColumnTitle(titleMap, cell.Id, nm)
+                        If Len(cellLabel) = 0 Then cellLabel = colTitle
+                        If Len(cellLabel) = 0 Then cellLabel = GetColumnTitleForIndex(tbl, c)
                         seen.Add cell.Id, True
                         AppendControlNode cell, t, cell.Id, txt, nm, arr, count, cellLabel
                     End If
                 End If
             End If
+            If CaptureLimitReached(count) Then Exit Sub
+            If BudgetExceeded() Then gBudgetHit = True : Exit Sub
         Next
     Next
 End Sub
 
-Sub ProbeOverviewFastPaths(session, usrPath, prog, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim headerNums, partNums, partnerSuffixes, hi, pi, fi, hdr, fieldId, tblPaths, ti, tbl, tblPath
-    If Len(prog) = 0 Then Exit Sub
-
-    headerNums = Array(4021, 4301, 4020, 4300)
-    partNums = Array(4698, 4699, 4700, 4701, 4702)
-    partnerSuffixes = Array("KUAGV-KUNNR", "KUWEV-KUNNR", "KUNAG-KUNNR", "KUNWE-KUNNR", "VBPA-KUNNR")
-
-    For hi = 0 To UBound(headerNums)
-        hdr = usrPath & "/subSUBSCREEN_HEADER:" & prog & ":" & headerNums(hi)
-        For pi = 0 To UBound(partNums)
-            For fi = 0 To UBound(partnerSuffixes)
-                fieldId = hdr & "/subPART-SUB:" & prog & ":" & partNums(pi) & "/ctxt" & partnerSuffixes(fi)
-                TryAppendFieldPath session, fieldId, arr, count, seen
-            Next
-        Next
-        For fi = 0 To UBound(partnerSuffixes)
-            TryAppendFieldPath session, hdr & "/ctxt" & partnerSuffixes(fi), arr, count, seen
-        Next
-    Next
-
-    tblPaths = Array( _
-        usrPath & "/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:" & prog & ":4400/subSUBSCREEN_TC:" & prog & ":4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG", _
-        usrPath & "/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:" & prog & ":4401/subSUBSCREEN_TC:" & prog & ":4900/tblSAPMV45ATCTRL_U_ERF_AUFTRAG", _
-        usrPath & "/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:" & prog & ":4400/subSUBSCREEN_TC:" & prog & ":4899/tblSAPMV45ATCTRL_U_ERF_AUFTRAG" _
-    )
-    For ti = 0 To UBound(tblPaths)
-        tblPath = tblPaths(ti)
-        Set tbl = session.FindById(tblPath)
-        If Not tbl Is Nothing Then
-            CaptureTableFields session, tblPath, tbl, arr, count, seen
-            Exit For
-        End If
-    Next
-End Sub
-
-Sub DiscoverGuiTableControls(session, usrPath, prog, scr, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim tblPath, tbl, tblName, tabIdx, bodyNums, tcNums, bi, ti, bn, tn
-    tblName = "tblSAPMV45ATCTRL_U_ERF_AUFTRAG"
-    tabIdx = "\01"
-    bodyNums = Array(4400, 4401)
-    tcNums = Array(4900, 4899)
-
-    For bi = 0 To UBound(bodyNums)
-        bn = bodyNums(bi)
-        For ti = 0 To UBound(tcNums)
-            tn = tcNums(ti)
-            tblPath = usrPath & "/tabsTAXI_TABSTRIP_OVERVIEW/tabpT" & tabIdx & "/ssubSUBSCREEN_BODY:" & prog & ":" & bn & "/subSUBSCREEN_TC:" & prog & ":" & tn & "/" & tblName
-            Set tbl = session.FindById(tblPath)
-            If Not tbl Is Nothing Then
-                CaptureTableFields session, tblPath, tbl, arr, count, seen
-                Exit Sub
-            End If
-        Next
-    Next
-End Sub
-
-Sub DiscoverNestedOverviewFields(session, usrPath, prog, scr, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim paths, suffixes, candidates, i, usrCtl, filledAfterFast
-    ProbeOverviewFastPaths session, usrPath, prog, arr, count, seen
-    filledAfterFast = CountFilledFields(arr, count)
-    If filledAfterFast >= 3 Then Exit Sub
-
-    Set paths = CreateObject("Scripting.Dictionary")
-    Set suffixes = CreateObject("Scripting.Dictionary")
-
-    BuildDynamicContainerPaths session, usrPath, prog, scr, paths
-
-    candidates = GetStandardFieldSuffixes()
-    For i = 0 To UBound(candidates)
-        suffixes(candidates(i)) = True
-    Next
-
-    For i = 0 To count - 1
-        AddSuffixFromId arr(i)("id"), suffixes
-    Next
-
-    ProbeFindByIdInContainers session, paths, suffixes, arr, count, seen
-
-    Set usrCtl = session.FindById(usrPath)
-    If Not usrCtl Is Nothing Then ProbeFindByNameFields session, usrCtl, arr, count, seen
-
-    If CountFilledFields(arr, count) < 3 And Len(prog) > 0 Then
-        DiscoverGuiTableControls session, usrPath, prog, scr, arr, count, seen
-    End If
-End Sub
-
-Function CountFilledFields(arr, count)
-    Dim i, txt, n
-    n = 0
-    For i = 0 To count - 1
-        txt = Trim(arr(i)("value"))
-        If Len(txt) = 0 Then txt = Trim(arr(i)("text"))
-        If Len(txt) > 0 And IsCapturedFieldId(arr(i)("id")) Then n = n + 1
-    Next
-    CountFilledFields = n
-End Function
-
-Function NeedsOverviewDiscovery(session, scr, prog)
-    NeedsOverviewDiscovery = False
-    If StrComp(prog, "SAPMV45A", vbTextCompare) <> 0 Then Exit Function
-    On Error Resume Next
-    Dim wndText
-    wndText = session.FindById("wnd[0]").Text
-    If InStr(1, wndText, "Overview", vbTextCompare) > 0 Then
-        NeedsOverviewDiscovery = True
-        Exit Function
-    End If
-    If IsNumeric(scr) Then
-        If CLng(scr) >= 4300 Or CLng(scr) = 4000 Then NeedsOverviewDiscovery = True
-    End If
-End Function
-
-Sub ProbeSubscreenContainers(session, baseUsrPath, prog, scr, ByRef visited, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim patterns, p, path, scrNum, offset, scrTry
-    patterns = Array( _
-        baseUsrPath & "/subSUBSCREEN_HEADER:" & prog & ":" & scr, _
-        baseUsrPath & "/subSUBSCREEN_INITIAL:" & prog & ":" & scr, _
-        baseUsrPath & "/subSUBSCREEN_BODY:" & prog & ":" & scr, _
-        baseUsrPath & "/subSCREEN_HEADER:" & prog & ":" & scr, _
-        baseUsrPath & "/subSCREEN:" & prog & ":" & scr, _
-        baseUsrPath & "/tabsTAXI_TABSTRIP", _
-        baseUsrPath & "/tabsTAXI_TABSTRIP_OVERVIEW", _
-        baseUsrPath & "/tabsTAXI_TABSTRIP_ITEM" _
-    )
-    For Each p In patterns
-        DiscoverByIdBfs session, p, visited, arr, count, seen, 0
-    Next
-    If IsNumeric(scr) Then
-        scrNum = CLng(scr)
-        For offset = -3 To 3
-            scrTry = CStr(scrNum + offset)
-            path = baseUsrPath & "/subSUBSCREEN_HEADER:" & prog & ":" & scrTry
-            DiscoverByIdBfs session, path, visited, arr, count, seen, 0
-            path = baseUsrPath & "/subSUBSCREEN_BODY:" & prog & ":" & scrTry
-            DiscoverByIdBfs session, path, visited, arr, count, seen, 0
-        Next
-    End If
-End Sub
-
-Function ShouldDeepIndexChild(ctl)
-    On Error Resume Next
-    Dim t, id
-    ShouldDeepIndexChild = False
-    If ctl Is Nothing Then Exit Function
-    t = LCase(ctl.Type)
-    id = LCase(ctl.Id)
-    If InStr(t, "container") > 0 Or InStr(t, "shell") > 0 Or InStr(t, "custom") > 0 Then
-        ShouldDeepIndexChild = True
-        Exit Function
-    End If
-    If InStr(t, "userarea") > 0 Or InStr(t, "table") > 0 Or InStr(t, "grid") > 0 Then
-        ShouldDeepIndexChild = True
-        Exit Function
-    End If
-    If InStr(id, "cntl") > 0 Or InStr(id, "grid") > 0 Or InStr(id, "alv") > 0 Or InStr(id, "sub") > 0 Then
-        ShouldDeepIndexChild = True
-    End If
-End Function
-
-Sub DiscoverByDeepIndexScan(session, root, ByRef arr, ByRef count, ByRef seen, maxDepth)
-    On Error Resume Next
-    If root Is Nothing Then Exit Sub
-    If maxDepth <= 0 Then
-        ProcessSapControl session, root, arr, count, seen
-        Exit Sub
-    End If
-
-    Dim d0, d1, d2, i0, i1, i2, id, cid, lt, childCount, max0, max1, max2
-    childCount = root.Children.Count
-    If childCount <= 0 Then Exit Sub
-    max0 = childCount - 1
-    If max0 > 150 Then max0 = 150
-    max1 = 25
-    max2 = 15
-
-    For i0 = 0 To max0
-        Err.Clear
-        Set d0 = root.Children(i0)
-        If Err.Number <> 0 Then Exit For
-        ProcessSapControl session, d0, arr, count, seen
-        id = d0.Id
-        cid = LCase(id)
-        lt = LCase(d0.Type)
-        If InStr(cid, "cntl") > 0 Or InStr(cid, "grid") > 0 Then ProbeShellPathsForCntl session, id, arr, count, seen
-        If InStr(lt, "table") > 0 Or InStr(cid, "/tbl") > 0 Then CaptureTableFields session, id, d0, arr, count, seen
-        TryCaptureGridControl session, d0, id, arr, count, seen
-        If maxDepth >= 2 And ShouldDeepIndexChild(d0) Then
-            For i1 = 0 To max1
-                Err.Clear
-                Set d1 = d0.Children(i1)
-                If Err.Number <> 0 Then Exit For
-                ProcessSapControl session, d1, arr, count, seen
-                id = d1.Id
-                cid = LCase(id)
-                lt = LCase(d1.Type)
-                If InStr(cid, "cntl") > 0 Or InStr(cid, "grid") > 0 Then ProbeShellPathsForCntl session, id, arr, count, seen
-                If InStr(lt, "table") > 0 Then CaptureTableFields session, id, d1, arr, count, seen
-                TryCaptureGridControl session, d1, id, arr, count, seen
-                If maxDepth >= 3 And ShouldDeepIndexChild(d1) Then
-                    For i2 = 0 To max2
-                        Err.Clear
-                        Set d2 = d1.Children(i2)
-                        If Err.Number <> 0 Then Exit For
-                        ProcessSapControl session, d2, arr, count, seen
-                        TryCaptureGridControl session, d2, d2.Id, arr, count, seen
-                    Next
-                End If
-            Next
-        End If
-    Next
-End Sub
-
-Function ExtractTableFieldSuffix(id)
-    Dim pos, tail
-    ExtractTableFieldSuffix = ""
-    If Len(id) = 0 Then Exit Function
-    pos = InStrRev(id, "/")
-    If pos > 0 Then
-        tail = Mid(id, pos + 1)
-    Else
-        tail = id
-    End If
-    tail = Replace(tail, "ctxt", "", 1, 1, vbTextCompare)
-    tail = Replace(tail, "lbl", "", 1, 1, vbTextCompare)
-    tail = Replace(tail, "txt", "", 1, 1, vbTextCompare)
-    tail = Replace(tail, "cmb", "", 1, 1, vbTextCompare)
-    If InStr(tail, "-") > 0 And Len(tail) >= 4 Then ExtractTableFieldSuffix = tail
-End Function
-
-Sub AddSuffixFromId(id, ByRef suffixes)
-    Dim suffix
-    suffix = ExtractTableFieldSuffix(id)
-    If Len(suffix) > 0 Then suffixes(suffix) = True
-End Sub
-
-Sub ProbeFindByIdPairsForSuffixes(session, usrPath, ByRef suffixes, ByRef arr, ByRef count, ByRef seen)
-    Dim suffix, fieldId
-    For Each suffix In suffixes.Keys
-        fieldId = usrPath & "/ctxt" & suffix
-        AppendFieldById session, fieldId, arr, count, seen
-    Next
-End Sub
-
-Sub ProbeFlatUsrFindByIdFields(session, usrPath, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim candidates, i, suffix, fieldId, fld
-    candidates = GetStandardFieldSuffixes()
-    For i = 0 To UBound(candidates)
-        suffix = candidates(i)
-        fieldId = usrPath & "/ctxt" & suffix
-        Set fld = session.FindById(fieldId)
-        If Not fld Is Nothing Then AppendFieldById session, fieldId, arr, count, seen
-    Next
-End Sub
-
-Function CountEditableFields(arr, count)
-    Dim i, id, n
-    n = 0
-    For i = 0 To count - 1
-        id = arr(i)("id")
-        If IsEditableFieldId(id) Then n = n + 1
-    Next
-    CountEditableFields = n
-End Function
+' --- Status bar -------------------------------------------------------------
 
 Function ReadSessionStatusBar(session)
     On Error Resume Next
@@ -1650,49 +788,78 @@ Sub PrepareScreenForDiscovery(session)
     If Not wnd Is Nothing Then wnd.SetFocus
 End Sub
 
-Sub WalkControl(session, ctl, ByRef arr, ByRef count, ByRef seen)
+' --- Generic capture core ---------------------------------------------------
+
+Sub CaptureValueField(ctl, t, lt, id, ByRef arr, ByRef count, ByRef seen)
     On Error Resume Next
-    Dim i, child, kids, childCount, indexBase, startIndex, endIndex, id, t
+    Dim txt, nm
+    If Len(id) = 0 Then Exit Sub
+    If seen.Exists(id) Then Exit Sub
+    If IsTechnicalType(t) Then Exit Sub
+    If Not IsEditableFieldType(t) Then Exit Sub
+    txt = ReadControlValue(ctl, lt)
+    If Len(Trim(txt)) = 0 Then Exit Sub
+    nm = ResolveControlName(ctl)
+    seen.Add id, True
+    AppendControlNode ctl, t, id, txt, nm, arr, count, ""
+End Sub
+
+' Bounded, generic, depth-first walk. Reads value fields; reads tables/ALV grids
+' as cells and prunes their internals; recurses everything else. Stops on any of
+' the field/depth/breadth/visited/wall-clock caps.
+Sub WalkControl(session, ctl, ByRef arr, ByRef count, ByRef seen, depth)
+    On Error Resume Next
     If ctl Is Nothing Then Exit Sub
     If CaptureLimitReached(count) Then Exit Sub
+    If depth > gMaxDepth Then Exit Sub
+    If gDbgVisited > gMaxVisited Then Exit Sub
+    If BudgetExceeded() Then gBudgetHit = True : Exit Sub
 
-    ProcessSapControl session, ctl, arr, count, seen
-    If CaptureLimitReached(count) Then Exit Sub
-
+    Dim t, lt, id, kids, cc, i, child
+    t = ctl.Type
+    lt = LCase(t)
     id = ctl.Id
-    t = LCase(ctl.Type)
-    If InStr(t, "table") > 0 Or InStr(LCase(id), "/tbl") > 0 Then
+    gDbgVisited = gDbgVisited + 1
+    DbgNoteType t
+
+    ' Old-style table control: read cells, then prune (cells are its children).
+    If InStr(lt, "table") > 0 Or InStr(LCase(id), "/tbl") > 0 Then
         CaptureTableFields session, id, ctl, arr, count, seen
+        Exit Sub
     End If
 
-    Err.Clear
+    ' ALV / control host (GuiShell/ContainerShell/CustomControl/GridView): probe
+    ' for a readable grid ONCE, then prune. These host ALV/tree/HTML/picture
+    ' controls — never dynpro input fields — so re-walking their internals only
+    ' repeats the (expensive) grid descent without finding capturable fields.
+    If ShouldProbeAsGrid(lt) Then
+        TryCaptureGridControl session, ctl, id, arr, count, seen
+        Exit Sub
+    End If
+
+    CaptureValueField ctl, t, lt, id, arr, count, seen
+
     Set kids = ctl.Children
-    If Err.Number <> 0 Or kids Is Nothing Then
-        Err.Clear
-        Exit Sub
-    End If
+    If Err.Number <> 0 Or kids Is Nothing Then Exit Sub
+    cc = kids.Count
+    If Err.Number <> 0 Or cc <= 0 Then Exit Sub
+    If cc > gMaxChildrenPerNode Then cc = gMaxChildrenPerNode
 
-    childCount = 0
-    childCount = kids.Count
-    If Err.Number <> 0 Or childCount <= 0 Then
-        Err.Clear
-        Exit Sub
-    End If
-
-    indexBase = CollectionIndexBase(kids)
-    startIndex = indexBase
-    endIndex = childCount - 1 + indexBase
-
-    For i = startIndex To endIndex
+    ' SAP GuiComponentCollection is 0-based; one Item() call per child (no
+    ' index-base probing or multi-fallback) keeps COM round-trips minimal.
+    For i = 0 To cc - 1
         If CaptureLimitReached(count) Then Exit For
+        If BudgetExceeded() Then gBudgetHit = True : Exit For
         Err.Clear
-        Set child = ChildAt(ctl, kids, i)
-
-        If Not child Is Nothing Then
-            WalkControl session, child, arr, count, seen
+        Set child = Nothing
+        Set child = kids.Item(CLng(i))
+        If Err.Number = 0 Then
+            If Not child Is Nothing Then WalkControl session, child, arr, count, seen, depth + 1
         End If
     Next
 End Sub
+
+' --- Session attach ---------------------------------------------------------
 
 Function ScoreSession(session, winTitle)
     On Error Resume Next
@@ -1711,6 +878,46 @@ Function ScoreSession(session, winTitle)
         End If
     End If
     ScoreSession = score
+End Function
+
+Function GetBestSession(app, winTitle)
+    On Error Resume Next
+    Dim session, best, bestScore, score
+    Dim connections, conn, ci, sessions, si, s
+
+    Set best = Nothing
+    bestScore = -1
+
+    Set session = app.ActiveSession
+    If Not session Is Nothing Then
+        score = ScoreSession(session, winTitle)
+        If score > bestScore Then
+            bestScore = score
+            Set best = session
+        End If
+    End If
+
+    Set connections = app.Children
+    If connections Is Nothing Then
+        Set GetBestSession = best
+        Exit Function
+    End If
+
+    For ci = 0 To connections.Count - 1
+        Set conn = connections.Item(ci)
+        Set sessions = conn.Children
+        If Not sessions Is Nothing Then
+            For si = 0 To sessions.Count - 1
+                Set s = sessions.Item(si)
+                score = ScoreSession(s, winTitle)
+                If score > bestScore Then
+                    bestScore = score
+                    Set best = s
+                End If
+            Next
+        End If
+    Next
+    Set GetBestSession = best
 End Function
 
 Function AttachSapSession(application, winTitle)
@@ -1787,45 +994,56 @@ Function AttachSapSession(application, winTitle)
     SessionDbgSet "attachedWindowTitle", AttachSapSession.FindById("wnd[0]").Text
 End Function
 
-Function GetBestSession(app, winTitle)
-    On Error Resume Next
-    Dim session, best, bestScore, score
-    Dim connections, conn, ci, sessions, si, s
+' --- Dedupe + emit ----------------------------------------------------------
 
-    Set best = Nothing
-    bestScore = -1
-
-    Set session = app.ActiveSession
-    If Not session Is Nothing Then
-        score = ScoreSession(session, winTitle)
-        If score > bestScore Then
-            bestScore = score
-            Set best = session
+Function NormalizeControlDedupeKey(id)
+    Dim tail, bracket, suffix, row, col
+    tail = id
+    bracket = InStr(tail, "[")
+    If bracket > 0 Then
+        suffix = Left(tail, bracket - 1)
+        row = Mid(tail, bracket + 1)
+        col = Mid(row, InStr(row, ",") + 1)
+        row = Left(row, InStr(row, ",") - 1)
+        col = Left(col, InStr(col, "]") - 1)
+        suffix = ExtractSuffixFromControlId(suffix)
+        If Len(suffix) > 0 Then
+            NormalizeControlDedupeKey = suffix & "[" & row & "," & col & "]"
+            Exit Function
         End If
     End If
+    NormalizeControlDedupeKey = ExtractSuffixFromControlId(id)
+    If Len(NormalizeControlDedupeKey) = 0 Then NormalizeControlDedupeKey = id
+End Function
 
-    Set connections = app.Children
-    If connections Is Nothing Then
-        Set GetBestSession = best
-        Exit Function
+Sub DedupeCapturedControls(ByRef arr, ByRef count)
+    Dim keys, i, key, kept(), keptCount
+    If count <= 0 Then
+        count = 0
+        ReDim arr(0)
+        Exit Sub
     End If
-
-    For ci = 0 To connections.Count - 1
-        Set conn = connections.Item(ci)
-        Set sessions = conn.Children
-        If Not sessions Is Nothing Then
-            For si = 0 To sessions.Count - 1
-                Set s = sessions.Item(si)
-                score = ScoreSession(s, winTitle)
-                If score > bestScore Then
-                    bestScore = score
-                    Set best = s
-                End If
-            Next
+    Set keys = CreateObject("Scripting.Dictionary")
+    keptCount = 0
+    ReDim kept(count - 1)
+    For i = 0 To count - 1
+        key = NormalizeControlDedupeKey(arr(i)("id"))
+        If Not keys.Exists(key) Then
+            keys.Add key, True
+            Set kept(keptCount) = arr(i)
+            keptCount = keptCount + 1
         End If
     Next
-    Set GetBestSession = best
-End Function
+    count = keptCount
+    If keptCount = 0 Then
+        ReDim arr(0)
+    Else
+        ReDim arr(keptCount - 1)
+        For i = 0 To keptCount - 1
+            Set arr(i) = kept(i)
+        Next
+    End If
+End Sub
 
 Sub EmitJson(controls, ctrlCount, txn, prog, scr, captureSource, errMsg, sessionConnected)
     Dim json, i, c, typeKey, typeList
@@ -1877,6 +1095,7 @@ Sub EmitJson(controls, ctrlCount, txn, prog, scr, captureSource, errMsg, session
     json = json & """sessionConnected"":" & LCase(CStr(sessionConnected)) & ","
     json = json & """controlCount"":" & ctrlCount & ","
     json = json & """discoverMs"":" & gDiscoverMs & ","
+    json = json & """budgetExceeded"":" & LCase(CStr(gBudgetHit)) & ","
     json = json & """visitedControls"":" & gDbgVisited & ","
     json = json & """gridCandidates"":" & gDbgGridCandidates & ","
     json = json & """gridCellsCaptured"":" & gDbgGridCells & ","
@@ -1890,85 +1109,14 @@ Sub EmitJson(controls, ctrlCount, txn, prog, scr, captureSource, errMsg, session
     WScript.Echo json
 End Sub
 
-Sub DiscoverByIndexScan(session, containerId, ByRef visited, ByRef arr, ByRef count, ByRef seen)
-    On Error Resume Next
-    Dim container, ctl, i, childId, maxScan
-    maxScan = 500
-    Set container = session.FindById(containerId)
-    If container Is Nothing Then Exit Sub
-
-    For i = 0 To maxScan
-        Err.Clear
-        Set ctl = container.Children(i)
-        If Err.Number <> 0 Then Exit For
-        If ctl Is Nothing Then Exit For
-        childId = ctl.Id
-        If Len(childId) > 0 Then
-            If Not visited.Exists(childId) Then
-                visited.Add childId, True
-                ProcessSapControl session, ctl, arr, count, seen
-                DiscoverByIdBfs session, childId, visited, arr, count, seen, 0
-            End If
-        Else
-            ProcessSapControl session, ctl, arr, count, seen
-        End If
-    Next
-End Sub
-
-Function NormalizeControlDedupeKey(id)
-    Dim tail, bracket, suffix, row, col
-    tail = id
-    bracket = InStr(tail, "[")
-    If bracket > 0 Then
-        suffix = Left(tail, bracket - 1)
-        row = Mid(tail, bracket + 1)
-        col = Mid(row, InStr(row, ",") + 1)
-        row = Left(row, InStr(row, ",") - 1)
-        col = Left(col, InStr(col, "]") - 1)
-        suffix = ExtractSuffixFromControlId(suffix)
-        If Len(suffix) > 0 Then
-            NormalizeControlDedupeKey = suffix & "[" & row & "," & col & "]"
-            Exit Function
-        End If
-    End If
-    NormalizeControlDedupeKey = ExtractSuffixFromControlId(id)
-    If Len(NormalizeControlDedupeKey) = 0 Then NormalizeControlDedupeKey = id
-End Function
-
-Sub DedupeCapturedControls(ByRef arr, ByRef count)
-    Dim keys, i, key, kept(), keptCount
-    If count <= 0 Then
-        count = 0
-        ReDim arr(0)
-        Exit Sub
-    End If
-    Set keys = CreateObject("Scripting.Dictionary")
-    keptCount = 0
-    ReDim kept(count - 1)
-    For i = 0 To count - 1
-        key = NormalizeControlDedupeKey(arr(i)("id"))
-        If Not keys.Exists(key) Then
-            keys.Add key, True
-            Set kept(keptCount) = arr(i)
-            keptCount = keptCount + 1
-        End If
-    Next
-    count = keptCount
-    If keptCount = 0 Then
-        ReDim arr(0)
-    Else
-        ReDim arr(keptCount - 1)
-        For i = 0 To keptCount - 1
-            Set arr(i) = kept(i)
-        Next
-    End If
-End Sub
-
+' Walk the ACTIVE window's user area (handles modal popups generically), with all
+' bounds enforced by WalkControl. No transaction-specific paths.
 Sub DiscoverScreenControls(session, ByRef arr, ByRef count, ByRef seen)
     On Error Resume Next
-    Dim usrPath, prog, scr, info, t0, usrCtl, countAfterWalk
+    Dim usrPath, basePath, activeWnd, prog, scr, info, t0, usrCtl
     t0 = Timer
-    usrPath = "wnd[0]/usr"
+    gStartTimer = Timer
+    gBudgetHit = False
     prog = ""
     scr = ""
     Set info = session.Info
@@ -1979,14 +1127,23 @@ Sub DiscoverScreenControls(session, ByRef arr, ByRef count, ByRef seen)
 
     PrepareScreenForDiscovery session
 
-    Set usrCtl = session.FindById(usrPath)
-    If Not usrCtl Is Nothing Then
-        WalkControl session, usrCtl, arr, count, seen
+    basePath = "wnd[0]"
+    Set activeWnd = session.ActiveWindow
+    If Not activeWnd Is Nothing Then
+        If Len(activeWnd.Id) > 0 Then basePath = activeWnd.Id
     End If
-    countAfterWalk = count
+    usrPath = basePath & "/usr"
 
-    SessionDbgSet "recursiveUsrWalk", "true"
-    SessionDbgSet "recursiveUsrWalkCount", countAfterWalk
+    Set usrCtl = session.FindById(usrPath)
+    If usrCtl Is Nothing Then
+        usrPath = "wnd[0]/usr"
+        Set usrCtl = session.FindById(usrPath)
+    End If
+    If Not usrCtl Is Nothing Then WalkControl session, usrCtl, arr, count, seen, 0
+
+    SessionDbgSet "discoverWindow", basePath
+    SessionDbgSet "budgetExceeded", LCase(CStr(gBudgetHit))
+    SessionDbgSet "recursiveUsrWalkCount", count
     gDiscoverMs = CLng((Timer - t0) * 1000)
     If gDiscoverMs < 0 Then gDiscoverMs = 0
     DedupeCapturedControls arr, count
