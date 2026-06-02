@@ -21,7 +21,9 @@ Think of it as a lightweight Scribe-style tool focused on SAP process documentat
 | **Step management** | Drag to reorder, edit descriptions, delete steps |
 | **Save / Open** | Projects saved as JSON (`.json`) under `data/sops/` |
 | **DOCX export** | Word document with metadata; multi-field steps break onto separate lines |
-| **SOP metadata** | Author, version, review date (defaults to today), and title |
+| **Branding & templates** | Reusable company logo, name, accent color, and footer; cover page, Document Control table, headers/footers with page numbers — applied to every export |
+| **Document templates** | **Standard** (cover + headers/footers), **Detailed** (adds Revision History), **Minimal** (header only, no cover) |
+| **SOP metadata** | Author, version, review date (defaults to today), title, plus optional Document ID, Department, and Classification |
 
 ---
 
@@ -247,11 +249,36 @@ Example `data/settings.json`:
   "sessionHotkey": "CommandOrControl+Shift+S",
   "captureTarget": "sap",
   "maxCaptureFields": 10,
-  "lastProjectPath": ""
+  "lastProjectPath": "",
+  "branding": {
+    "companyName": "Business Core Solutions",
+    "logoPath": "",
+    "accentColor": "#F97316",
+    "footerText": "Confidential — for internal use only",
+    "template": "standard"
+  }
 }
 ```
 
 Diagnostics after each capture: **Settings → Open data folder** → `capture.log`, `snapshot-last.json`.
+
+---
+
+## Branding & Templates
+
+Set your company branding **once** in **Settings (⚙️) → Branding & Template**; it is reused on every Word export.
+
+| Setting | What it does |
+|---------|----------------|
+| **Company name** | Shown on the cover page, header, and footer (default: *Business Core Solutions*) |
+| **Document template** | **Standard** = cover page + headers/footers + Document Control table; **Detailed** = adds a Revision History table; **Minimal** = simple header only, no cover page |
+| **Accent color** | Color for the title rule, section headings, and header line |
+| **Footer / confidentiality text** | Left side of every page footer (page number is on the right) |
+| **Logo** | PNG/JPG/GIF/BMP; copied into `data/branding/` so it travels with your data folder. Appears centered on the cover page |
+
+Per-SOP fields in **SOP Details** — **Document ID**, **Department**, and **Classification** — populate the cover page's **Document Control** table when filled in. They are saved inside each project's `.json`.
+
+> Branding lives in `data/settings.json` under a `branding` key, so the whole team can share one branded template. Department is remembered when you start a New SOP.
 
 ---
 

@@ -331,6 +331,8 @@ input:focus {
 	padding: 20px;
 	max-width: 520px;
 	width: 92%;
+	max-height: 90vh;
+	overflow-y: auto;
 	box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
 	color: var(--text-primary);
 }
@@ -355,6 +357,50 @@ input:focus {
 .meta-row input[type="date"] {
 	flex: 0 1 auto;
 	min-width: 9.5rem;
+}
+
+select {
+	padding: 10px 12px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border);
+	background: var(--bg-elevated);
+	color: var(--text-primary);
+	font-family: var(--font-body);
+	font-size: 0.9rem;
+}
+
+select:focus {
+	outline: none;
+	border-color: rgba(249, 115, 22, 0.5);
+	box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.12);
+}
+
+.meta-row select {
+	flex: 1 1 120px;
+	min-width: 100px;
+}
+
+.brand-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 10px 14px;
+	margin: 0.35rem 0 0.5rem;
+}
+
+.brand-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.brand-field > span {
+	font-size: 0.82rem;
+	color: var(--text-secondary);
+}
+
+.brand-field input[type="text"],
+.brand-field select {
+	width: 100%;
 }
 
 .capture-target-options {

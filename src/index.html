@@ -48,6 +48,17 @@
 						</label>
 					</div>
 				</div>
+				<div class="meta-row">
+					<input id="documentId" placeholder="Document ID (optional)" title="Document ID — appears on the cover page" />
+					<input id="department" placeholder="Department (optional)" title="Department — appears on the cover page" />
+					<select id="classification" title="Classification — appears on the cover page">
+						<option value="">Classification…</option>
+						<option value="Public">Public</option>
+						<option value="Internal">Internal</option>
+						<option value="Confidential">Confidential</option>
+						<option value="Restricted">Restricted</option>
+					</select>
+				</div>
 			</section>
 
 			<section class="panel">
@@ -89,6 +100,37 @@
 				<hr style="border:none;border-top:1px solid var(--border);margin:1rem 0" />
 				<label for="maxFieldsInput"><strong>Max SAP fields per capture</strong> — fewer fields = easier annotation (1–50)</label>
 				<input id="maxFieldsInput" type="number" min="1" max="50" step="1" value="10" style="width:5rem;margin:0.35rem 0 0.75rem" />
+				<hr style="border:none;border-top:1px solid var(--border);margin:1rem 0" />
+
+				<p style="margin:0 0 0.6rem;font-weight:600">Branding &amp; Template <span style="font-weight:400;color:var(--text-secondary)">— applied to every Word export</span></p>
+				<div class="brand-grid">
+					<label class="brand-field">
+						<span>Company name</span>
+						<input id="brandCompany" type="text" placeholder="Business Core Solutions" />
+					</label>
+					<label class="brand-field">
+						<span>Document template</span>
+						<select id="brandTemplate">
+							<option value="standard">Standard — cover page + headers &amp; footers</option>
+							<option value="detailed">Detailed — cover + revision history</option>
+							<option value="minimal">Minimal — header only, no cover page</option>
+						</select>
+					</label>
+					<label class="brand-field">
+						<span>Accent color</span>
+						<input id="brandAccent" type="color" value="#F97316" style="width:3rem;height:2.1rem;padding:0;cursor:pointer" />
+					</label>
+					<label class="brand-field" style="grid-column:1 / -1">
+						<span>Footer / confidentiality text</span>
+						<input id="brandFooter" type="text" placeholder="Confidential — for internal use only" />
+					</label>
+				</div>
+				<div class="brand-logo-row" style="display:flex;align-items:center;gap:0.75rem;margin:0.6rem 0 0.25rem;flex-wrap:wrap">
+					<img id="brandLogoPreview" alt="Logo preview" style="display:none;max-height:42px;max-width:140px;border:1px solid var(--border);border-radius:4px;background:#fff;padding:2px" />
+					<span id="brandLogoName" style="font-size:0.85rem;color:var(--text-secondary)">No logo selected</span>
+					<button type="button" data-action="brand-pick-logo">Choose logo…</button>
+					<button type="button" data-action="brand-remove-logo">Remove</button>
+				</div>
 				<hr style="border:none;border-top:1px solid var(--border);margin:1rem 0" />
 				<p style="margin:0 0 0.5rem;font-size:0.9rem;color:var(--text-secondary)">
 					<strong>Capture diagnostics</strong> — written after each capture (hidden from git)

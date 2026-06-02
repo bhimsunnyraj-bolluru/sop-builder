@@ -3,5 +3,12 @@
   "sessionHotkey": "CommandOrControl+Shift+S",
   "lastProjectPath": "",
   "maxCaptureFields": 10,
-  "captureTarget": "sap"
+  "captureTarget": "sap",
+  "branding": {
+    "companyName": "Business Core Solutions",
+    "logoPath": "",
+    "accentColor": "#F97316",
+    "footerText": "Confidential — for internal use only",
+    "template": "standard"
+  }
 }
